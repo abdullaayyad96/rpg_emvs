@@ -20,7 +20,7 @@ cal_dist_dir = "/home/abdulla/codes/event_vision_ws/calibration_images/cal_dist_
 input_image_topic = "dvs/image_raw"
 
 rospy.init_node('aruco_localizer', anonymous=True)
-rate = rospy.Rate(10) # 10hz
+rate = rospy.Rate(100) # 100hz
 
 #load calibration parameters
 mtx = pickle.load(open(cal_mtx_dir, 'rb'))
@@ -29,12 +29,17 @@ aruco_dict = aruco.Dictionary_get(aruco.DICT_6X6_250)
 
 #define ros publishers and subscribers
 aruco_image_publisher = rospy.Publisher('aruco_detection', Image, queue_size=10)
-aruco_pose_publisher = rospy.Publisher('aruco_pose', geo_msg.PoseStamped, queue_size=10)
+aruco_pose_publisher = rospy.Publisher('optitrack/davis', geo_msg.PoseStamped, queue_size=10)
 
 camera_pose = geo_msg.PoseStamped()
 
+initialized = False
+
+initial_rot = []
+initial_trans = []
 
 def image_callback(ros_image):
+    global initialized, initial_rot, initial_trans
 
     bridge = CvBridge()
     image = bridge.imgmsg_to_cv2(ros_image, desired_encoding='bgr8')
@@ -49,21 +54,33 @@ def image_callback(ros_image):
     if corners:
         frame_markers = aruco.drawDetectedMarkers(image.copy(), corners, ids)
 
+        size_of_marker =  0.181 # side lenght of the marker in meter
+        rvecs, tvecs, trash = aruco.estimatePoseSingleMarkers(corners, size_of_marker , mtx, dist)
+
+        frame_markers = aruco.drawAxis(frame_markers, mtx, dist, rvecs, tvecs, size_of_marker)
         aruco_image = bridge.cv2_to_imgmsg(frame_markers, encoding="bgr8")
         aruco_image_publisher.publish(aruco_image)
 
-        size_of_marker =  0.1 # side lenght of the marker in meter
-        rvecs, tvecs, trash = aruco.estimatePoseSingleMarkers(corners, size_of_marker , mtx, dist)
-
         rvecs = np.reshape(rvecs, (3,))
         tvecs = np.reshape(tvecs, (3,))
+
 
         cam_to_aruco_R = Rotation.from_rotvec(rvecs)
         cam_to_aruco_dcm = cam_to_aruco_R.as_dcm()
         aruco_to_cam_dcm = cam_to_aruco_dcm.transpose()
         aruco_to_cam_position = - np.matmul(aruco_to_cam_dcm, tvecs)
         aruco_to_cam_R = Rotation.from_dcm(aruco_to_cam_dcm)
+
+        if not initialized:
+            initial_trans = aruco_to_cam_position
+            initial_rot = aruco_to_cam_dcm
+        
+        aruco_to_cam_position = np.matmul(aruco_to_cam_dcm, aruco_to_cam_position - initial_trans)  
+        aruco_to_cam_R = Rotation.from_dcm(np.matmul(initial_rot, aruco_to_cam_dcm.transpose()))
+            
+            
         aruco_to_cam_quat = aruco_to_cam_R.as_quat()
+
         
         camera_pose.header.frame_id = "aruco_link"
         camera_pose.header.stamp = rospy.Time.now()
@@ -76,13 +93,26 @@ def image_callback(ros_image):
         camera_pose.pose.orientation.y = aruco_to_cam_quat[1]
         camera_pose.pose.orientation.z = aruco_to_cam_quat[2]
         camera_pose.pose.orientation.w = aruco_to_cam_quat[3]
+
+
+        initialized = True
+
+        return initialized
         
-    aruco_pose_publisher.publish(camera_pose)
 
 
 rospy.Subscriber(input_image_topic, Image, image_callback)
 
-rospy.spin()
+while not rospy.is_shutdown():
+    try:
+        input_image = rospy.wait_for_message(input_image_topic, Image, timeout=0.05)
+        initialized = image_callback(input_image)
+    except:
+        pass
+    if initialized:
+        aruco_pose_publisher.publish(camera_pose)
+    
+    rate.sleep()
 
 
 
