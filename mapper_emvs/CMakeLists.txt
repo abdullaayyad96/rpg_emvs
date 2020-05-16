@@ -35,6 +35,9 @@ cs_add_library(${PROJECT_NAME} ${SOURCES} ${HEADERS})
 cs_add_executable(run_emvs src/main.cpp)
 target_link_libraries(run_emvs ${PROJECT_NAME})
 
+cs_add_executable(realtime_emvs src/realtime.cpp)
+target_link_libraries(realtime_emvs ${PROJECT_NAME})
+
 ################################################################################
 cs_install()
 cs_export()
