@@ -17,6 +17,9 @@
 #include <sensor_msgs/Image.h>
 #include <geometry_msgs/PoseStamped.h>
 
+#include <dynamic_reconfigure/server.h>
+#include <mapper_emvs/EMVSCfgConfig.h>
+
 // Input parameters
 DEFINE_string(bag_filename, "input.bag", "Path to the rosbag");
 DEFINE_string(event_topic, "/dvs/events", "Name of the event topic (default: /dvs/events)");
@@ -47,7 +50,7 @@ class DepthEstimator
   public:
     DepthEstimator(const std::string& camero_info_topic, const std::string& event_topic, const std::string& pose_topic, float distance_thresh,
                    float dim_X, float dim_Y, float dim_Z, float min_depth, float max_depth, float fov_deg,
-                   float adaprive_threshold_kernel_size, float adaptive_threshold_c, float median_filter_size)
+                   float adaptive_threshold_kernel_size, float adaptive_threshold_c, float median_filter_size)
     {
       event_subs_ = ros_node_.subscribe(event_topic, 10, &DepthEstimator::EventsCallback, this);
       cam_info_subs_ = ros_node_.subscribe(camero_info_topic, 10, &DepthEstimator::CamInfoCallback, this);
@@ -57,11 +60,14 @@ class DepthEstimator
                                 min_depth, max_depth,
                                 fov_deg);
 
-      opts_depth_map_.adaptive_threshold_kernel_size_ = adaprive_threshold_kernel_size;
+      opts_depth_map_.adaptive_threshold_kernel_size_ = adaptive_threshold_kernel_size;
       opts_depth_map_.adaptive_threshold_c_ = adaptive_threshold_c;
       opts_depth_map_.median_filter_size_ = median_filter_size;
 
       update_distance_ = distance_thresh;
+
+      f_ = boost::bind(&DepthEstimator::parameter_callback, this, _1, _2);
+      server_.setCallback(f_);
     }
 
   private:
@@ -95,6 +101,9 @@ class DepthEstimator
       EMVS::OptionsDepthMap opts_depth_map_;
       sensor_msgs::Image ros_depth_map_;
       cv_bridge::CvImage depth_map_bridge_;
+
+      dynamic_reconfigure::Server<mapper_emvs::EMVSCfgConfig> server_;
+      dynamic_reconfigure::Server<mapper_emvs::EMVSCfgConfig>::CallbackType f_;
 
       void EventsCallback(const dvs_msgs::EventArray::ConstPtr &event_stream)
       {
@@ -199,6 +208,23 @@ class DepthEstimator
         this->poses_.clear();   
         this->pose_list_.clear();
         this->pose_timestaps_.clear();
+      }
+
+      void parameter_callback(mapper_emvs::EMVSCfgConfig &config, uint32_t level){
+        this->dsi_shape_ = EMVS::ShapeDSI(config.dimX, config.dimY, config.dimZ,
+                                    config.min_depth, config.max_depth,
+                                    config.fov_deg);
+
+        if(this->cam_initialized)
+        {
+          new(&this->mapper_) EMVS::MapperEMVS(this->cam_, this->dsi_shape_);
+        }
+
+        this->opts_depth_map_.adaptive_threshold_kernel_size_ = config.adaptive_threshold_kernel_size;
+        this->opts_depth_map_.adaptive_threshold_c_ = config.adaptive_threshold_c;
+        this->opts_depth_map_.median_filter_size_ = config.median_filter_size;
+
+        this->update_distance_ = config.update_distance;
       }
     
 };

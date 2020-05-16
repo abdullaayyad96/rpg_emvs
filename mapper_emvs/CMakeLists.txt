@@ -7,6 +7,11 @@ catkin_simple(ALL_DEPS_REQUIRED)
 set(CMAKE_BUILD_TYPE RelWithDebInfo) # Release, RelWithDebInfo
 set(CMAKE_CXX_FLAGS "-O3 -fopenmp -std=c++11 ${CMAKE_CXX_FLAGS}")
 
+## Generate dynamic reconfigure parameters in the 'cfg' folder
+##generate_dynamic_reconfigure_options(
+##  cfg/EMVSCfg.cfg
+##)
+
 set(HEADERS
   include/mapper_emvs/mapper_emvs.hpp
   include/mapper_emvs/data_loading.hpp
@@ -36,6 +41,7 @@ cs_add_executable(run_emvs src/main.cpp)
 target_link_libraries(run_emvs ${PROJECT_NAME})
 
 cs_add_executable(realtime_emvs src/realtime.cpp)
+add_dependencies(realtime_emvs ${PROJECT_NAME}_gencfg)
 target_link_libraries(realtime_emvs ${PROJECT_NAME})
 
 ################################################################################
