@@ -191,15 +191,20 @@ class DepthEstimator
         //evaluate depth map
         this->mapper_.getDepthMapFromDSI(this->depth_map_, this->confidence_map_, this->semidense_mask_, this->opts_depth_map_);
         this->depth_map_255_ = (this->depth_map_ - this->dsi_shape_.min_depth_) * (255.0 / (this->dsi_shape_.max_depth_ - this->dsi_shape_.min_depth_));
-        cv::imwrite("depth_map.png", this->depth_map_255_);
+        this->depth_map_255_.convertTo(this->depth_map_255_, CV_8U);
+        cv::Mat depthmap_color;
+        cv::applyColorMap(this->depth_map_255_, depthmap_color, cv::COLORMAP_RAINBOW);
+        cv::Mat depth_on_canvas = cv::Mat(depthmap_color.rows, depthmap_color.cols, CV_8UC3, cv::Scalar(1,1,1)*255);
+        depthmap_color.copyTo(depth_on_canvas, this->semidense_mask_);
+        cv::imwrite("depth_map.png", depth_on_canvas);
 
         ROS_INFO("Publishing Depth Map ...");
         //publish depth map
         this->ros_depth_map_.header.seq = 1; // user defined counter
         this->ros_depth_map_.header.stamp = ros::Time::now(); // time
-        //this->img_bridge = cv_bridge::CvImage(header, sensor_msgs::image_encodings::MONO8, this->corner_heatmap_cv_mono8);
-        this->depth_map_bridge_ = cv_bridge::CvImage(this->ros_depth_map_.header, sensor_msgs::image_encodings::TYPE_8SC1, this->depth_map_255_);
-        
+
+        this->depth_map_bridge_ = cv_bridge::CvImage(this->ros_depth_map_.header, sensor_msgs::image_encodings::RGB8, depth_on_canvas);
+
         this->depth_map_bridge_.toImageMsg(this->ros_depth_map_); // from cv_bridge to sensor_msgs::Image
 
         this->depthmap_publisher_.publish(this->ros_depth_map_);
