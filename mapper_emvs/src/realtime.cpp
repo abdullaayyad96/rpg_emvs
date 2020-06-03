@@ -22,6 +22,8 @@
 
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl_ros/transforms.h>
+#include <pcl/registration/incremental_registration.h>
+#include <pcl/registration/icp.h>
 
 // Input parameters
 DEFINE_string(bag_filename, "input.bag", "Path to the rosbag");
@@ -72,7 +74,12 @@ class DepthEstimator
       opts_pc_.min_num_neighbors_ = min_num_neighbors;   
       this->pc_.reset(new EMVS::PointCloud);
       this->map_pc_.reset(new EMVS::PointCloud);
+      this->global_pc_.reset(new EMVS::PointCloud);
       this->ros_pointcloud_.reset(new sensor_msgs::PointCloud2);
+      this->icp_.reset(new pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI>);
+      this->icp_->setMaxCorrespondenceDistance (0.05);
+      this->icp_->setMaximumIterations (50);
+      this->iicp_.setRegistration(this->icp_);
 
       update_distance_ = distance_thresh;
 
@@ -116,8 +123,11 @@ class DepthEstimator
       EMVS::OptionsPointCloud opts_pc_;
       EMVS::PointCloud::Ptr pc_;
       EMVS::PointCloud::Ptr map_pc_;
+      EMVS::PointCloud::Ptr global_pc_;
       sensor_msgs::PointCloud2::Ptr ros_pointcloud_;
-
+      pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI>::Ptr icp_;
+      pcl::registration::IncrementalRegistration<pcl::PointXYZI> iicp_;
+      
       Eigen::Matrix4d transformation_matrix = Eigen::Matrix4d::Identity();
 
       dynamic_reconfigure::Server<mapper_emvs::EMVSCfgConfig> server_;
@@ -185,6 +195,8 @@ class DepthEstimator
           this->pose_list_.clear();
           this->pose_timestaps_.clear();
           this->events_.clear();
+          this->iicp_.reset();
+          this->global_pc_.reset(new EMVS::PointCloud);
         }
         else if ((distance_to_last_keyframe > update_distance_) && this->cam_initialized && (this->pose_list_.size() > 2))
         {
@@ -236,8 +248,13 @@ class DepthEstimator
         this->mapper_.getPointcloud(this->depth_map_, this->semidense_mask_, this->opts_pc_, this->pc_);
 
         pcl::transformPointCloud(*this->pc_, *this->map_pc_, this->transformation_matrix);
-        this->map_pc_->header.frame_id = "camera";
-        pcl::toROSMsg(*this->map_pc_, *this->ros_pointcloud_);
+        this->iicp_.registerCloud(this->map_pc_);
+        pcl::PointCloud<pcl::PointXYZI>::Ptr tmp (new pcl::PointCloud<pcl::PointXYZI>);
+        pcl::transformPointCloud (*this->map_pc_, *tmp, this->iicp_.getAbsoluteTransform ());
+        *this->global_pc_ += *tmp;
+
+        this->global_pc_->header.frame_id = "camera";
+        pcl::toROSMsg(*this->global_pc_, *this->ros_pointcloud_);
         this->pointcloud_publisher_.publish(*this->ros_pointcloud_);
 
         this->events_.clear();
