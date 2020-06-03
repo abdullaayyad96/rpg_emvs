@@ -20,6 +20,9 @@
 #include <dynamic_reconfigure/server.h>
 #include <mapper_emvs/EMVSCfgConfig.h>
 
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl_ros/transforms.h>
+
 // Input parameters
 DEFINE_string(bag_filename, "input.bag", "Path to the rosbag");
 DEFINE_string(event_topic, "/dvs/events", "Name of the event topic (default: /dvs/events)");
@@ -50,7 +53,8 @@ class DepthEstimator
   public:
     DepthEstimator(const std::string& camero_info_topic, const std::string& event_topic, const std::string& pose_topic, float distance_thresh,
                    float dim_X, float dim_Y, float dim_Z, float min_depth, float max_depth, float fov_deg,
-                   float adaptive_threshold_kernel_size, float adaptive_threshold_c, float median_filter_size)
+                   float adaptive_threshold_kernel_size, float adaptive_threshold_c, float median_filter_size,
+                   float radius_search, float min_num_neighbors)
     {
       event_subs_ = ros_node_.subscribe(event_topic, 10, &DepthEstimator::EventsCallback, this);
       cam_info_subs_ = ros_node_.subscribe(camero_info_topic, 10, &DepthEstimator::CamInfoCallback, this);
@@ -63,6 +67,12 @@ class DepthEstimator
       opts_depth_map_.adaptive_threshold_kernel_size_ = adaptive_threshold_kernel_size;
       opts_depth_map_.adaptive_threshold_c_ = adaptive_threshold_c;
       opts_depth_map_.median_filter_size_ = median_filter_size;
+
+      opts_pc_.radius_search_ = radius_search;
+      opts_pc_.min_num_neighbors_ = min_num_neighbors;   
+      this->pc_.reset(new EMVS::PointCloud);
+      this->map_pc_.reset(new EMVS::PointCloud);
+      this->ros_pointcloud_.reset(new sensor_msgs::PointCloud2);
 
       update_distance_ = distance_thresh;
 
@@ -88,6 +98,7 @@ class DepthEstimator
       geometry_msgs::PoseStamped processed_pose_;
 
       ros::Publisher depthmap_publisher_ = ros_node_.advertise<sensor_msgs::Image>("depth_image", 3);
+      ros::Publisher pointcloud_publisher_ = ros_node_.advertise<sensor_msgs::PointCloud2>("point_cloud", 3);
     
       ros::Subscriber event_subs_; 
       ros::Subscriber cam_info_subs_;
@@ -102,6 +113,13 @@ class DepthEstimator
       sensor_msgs::Image ros_depth_map_;
       cv_bridge::CvImage depth_map_bridge_;
 
+      EMVS::OptionsPointCloud opts_pc_;
+      EMVS::PointCloud::Ptr pc_;
+      EMVS::PointCloud::Ptr map_pc_;
+      sensor_msgs::PointCloud2::Ptr ros_pointcloud_;
+
+      Eigen::Matrix4d transformation_matrix = Eigen::Matrix4d::Identity();
+
       dynamic_reconfigure::Server<mapper_emvs::EMVSCfgConfig> server_;
       dynamic_reconfigure::Server<mapper_emvs::EMVSCfgConfig>::CallbackType f_;
 
@@ -112,13 +130,15 @@ class DepthEstimator
         {
           this->events_.push_back(event_stream->events[i]);
         }
-
       }
 
       void CamInfoCallback(const sensor_msgs::CameraInfo::ConstPtr &camera_info)
       {
         ROS_INFO("Camera Info Received");
-        this->cam_.fromCameraInfo(*camera_info);
+        sensor_msgs::CameraInfo cam_info_ = *camera_info;
+        cam_info_.width = 346;
+        cam_info_.height = 260;
+        this->cam_.fromCameraInfo(cam_info_);
         this->cam_initialized = true;
 
         //initialize mapper
@@ -147,6 +167,9 @@ class DepthEstimator
                                       camera_pose->pose.orientation.x,
                                       camera_pose->pose.orientation.y,
                                       camera_pose->pose.orientation.z);
+
+        this->transformation_matrix.block(0,0,3,3) = quat.normalized().toRotationMatrix();
+        this->transformation_matrix.block(0,3,3,1) = position;
 
         geometry_utils::Transformation T(position, quat);
         poses_.insert(std::pair<ros::Time, geometry_utils::Transformation>(camera_pose->header.stamp, T));
@@ -209,6 +232,14 @@ class DepthEstimator
 
         this->depthmap_publisher_.publish(this->ros_depth_map_);
 
+        ROS_INFO("converting to Point Cloud ...");    
+        this->mapper_.getPointcloud(this->depth_map_, this->semidense_mask_, this->opts_pc_, this->pc_);
+
+        pcl::transformPointCloud(*this->pc_, *this->map_pc_, this->transformation_matrix);
+        this->map_pc_->header.frame_id = "camera";
+        pcl::toROSMsg(*this->map_pc_, *this->ros_pointcloud_);
+        this->pointcloud_publisher_.publish(*this->ros_pointcloud_);
+
         this->events_.clear();
         this->poses_.clear();   
         this->pose_list_.clear();
@@ -230,6 +261,9 @@ class DepthEstimator
         this->opts_depth_map_.median_filter_size_ = config.median_filter_size;
 
         this->update_distance_ = config.update_distance;
+
+        this->opts_pc_.radius_search_ = config.radius_search;
+        this->opts_pc_.min_num_neighbors_ = config.min_num_neighbors;
       }
     
 };
@@ -253,7 +287,8 @@ int main(int argc, char** argv)
 
   DepthEstimator depth_estimator(FLAGS_camera_info_topic, FLAGS_event_topic, FLAGS_pose_topic, 0.2,
                                 FLAGS_dimX, FLAGS_dimY, FLAGS_dimZ, FLAGS_min_depth, FLAGS_max_depth, FLAGS_fov_deg,
-                                FLAGS_adaptive_threshold_kernel_size, FLAGS_adaptive_threshold_c, FLAGS_median_filter_size);
+                                FLAGS_adaptive_threshold_kernel_size, FLAGS_adaptive_threshold_c, FLAGS_median_filter_size,
+                                FLAGS_radius_search, FLAGS_min_num_neighbors);
 
   ros::spin();
 
