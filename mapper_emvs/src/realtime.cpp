@@ -146,14 +146,13 @@ class DepthEstimator
       {
         ROS_INFO("Camera Info Received");
         sensor_msgs::CameraInfo cam_info_ = *camera_info;
-        cam_info_.width = 346;
-        cam_info_.height = 260;
+        // cam_info_.width = 346;
+        // cam_info_.height = 260;
         this->cam_.fromCameraInfo(cam_info_);
         this->cam_initialized = true;
 
-        //initialize mapper
+        //initialize map
         new(&this->mapper_) EMVS::MapperEMVS(this->cam_, this->dsi_shape_);
-
         //Disable camera info callbacks
         this->cam_info_subs_.shutdown();        
       }
