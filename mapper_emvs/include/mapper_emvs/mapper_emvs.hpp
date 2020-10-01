@@ -5,11 +5,31 @@
 #include <mapper_emvs/trajectory.hpp>
 #include <mapper_emvs/depth_vector.hpp>
 
-#include <dvs_msgs/Event.h>
 #include <image_geometry/pinhole_camera_model.h>
+#include <dvs_msgs/Event.h>
+#include <geometry_msgs/PoseStamped.h>
+#include "geometry_msgs/Pose.h"
 
+//#include <geometry_msgs/PoseStamped.h>
+#include <Eigen/Geometry> 
+#include <pcl/common/common_headers.h>
 #include <pcl/point_types.h>
 #include <pcl_ros/point_cloud.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/point_types.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/pcl_base.h>
+#include <pcl/visualization/pcl_visualizer.h>
+#include <pcl/ModelCoefficients.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/visualization/cloud_viewer.h>
+#include <pcl/filters/extract_indices.h>
+
+#include <vtkAutoInit.h>
+#include<math.h> 
+
 
 namespace EMVS {
 
@@ -66,6 +86,7 @@ struct OptionsPointCloud
   // Outlier removal parameters
   float radius_search_;
   int min_num_neighbors_;
+  
 };
 
 
@@ -90,11 +111,24 @@ public:
                             const cv::Mat& mask,
                             const OptionsPointCloud &options_pc,
                             PointCloud::Ptr &pc_);
+
+  void PCtoVoxelGrid(PointCloud::Ptr cloud, PointCloud::Ptr cloud_filtered, float leaf_size_x, float leaf_size_y, float leaf_size_z);
+
+  // void FitPlanetoPC(PointCloud::Ptr cloud_filtered, PointCloud::Ptr cloud_p, pcl::ModelCoefficients::Ptr coefficients);
+  // void PlaneRotationVector(pcl::ModelCoefficients::Ptr coefficients, geometry_utils::Transformation last_pose, Eigen::Vector4f& Quat);
+  // void PlaneinInertial(PointCloud::Ptr cloud_UNfiltered, PointCloud::Ptr cloud_filtered, geometry_utils::Transformation last_pose, Eigen::Vector4f Quat, Eigen::Vector4d& pcinInertialFrame, Eigen::Vector4f& PlaneQuatInertial, Eigen::Vector4d& UNfilteredPCInertial);
+  // void NavigatetoPlane(Eigen::Vector4d pc_, Eigen::Vector4f PlaneQuatInertial);
+
   
+
   Grid3D dsi_;
   
 
 private:
+
+  //Publisher
+  ros::NodeHandle ros_node_;
+  ros::Publisher cmd_pos_pub = ros_node_.advertise<geometry_msgs::Pose>("/ur_cmd_pose", 1);
 
   void setupDSI();
 
@@ -126,8 +160,9 @@ private:
   // Precomputed (normalized) bearing vectors for each pixel of the reference image
   Eigen::Matrix2Xf precomputed_rectified_points_;
 
-  const size_t packet_size_ = 1024;
+  const size_t packet_size_ = 246;
 
 };
+
 
 }

@@ -41,8 +41,12 @@ public:
     CHECK_GT(cy_, 0.0);
 
     K_ << (float) fx_, 0.f          , (float) cx_,
-          0.f        , (float) fy_  , (float) cy_,
-          0.f        , 0.f          ,  1.f;
+           0.f        , (float) fy_  , (float) cy_,
+           0.f        , 0.f          ,  1.f;
+
+    // K_ << (float) 206.29417, 0.f          , (float) 115.647026,
+    //       0.f        , (float) 206.3225  , (float) 83.69464,
+    //       0.f        , 0.f          ,  1.f;
 
     Kinv_ = K_.inverse();
   }

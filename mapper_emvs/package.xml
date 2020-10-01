@@ -14,6 +14,7 @@
   <depend>sensor_msgs</depend>
   <depend>dvs_msgs</depend>
   <depend>camera_info_manager</depend>
+  <depend>Mission_Management</depend>
   <depend>image_geometry</depend>
   <depend>minkindr</depend>
   <depend>cartesian3dgrid</depend>

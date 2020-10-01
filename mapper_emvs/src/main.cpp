@@ -1,15 +1,35 @@
 #include <mapper_emvs/data_loading.hpp>
 #include <mapper_emvs/mapper_emvs.hpp>
+#include <mapper_emvs/pc_geometry.hpp>
 
 #include <image_geometry/pinhole_camera_model.h>
 
 #include <opencv2/highgui/highgui.hpp>
+#include <pcl/common/common_headers.h>
 #include <pcl/io/pcd_io.h>
+#include <pcl/point_types.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/pcl_base.h>
+#include <pcl/visualization/pcl_visualizer.h>
+#include <pcl/ModelCoefficients.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/visualization/cloud_viewer.h>
+#include <pcl/filters/extract_indices.h>
 
-#include <gflags/gflags.h>
-#include <glog/logging.h>
+#include <vtkAutoInit.h>
 
 #include <chrono>
+
+#include "ros/ros.h"
+#include "std_msgs/String.h"
+
+#include "geometry_msgs/Point.h"
+
+#include "Mission_Management/my_msg.h"
+#include <vector>
+
 
 // Input parameters
 DEFINE_string(bag_filename, "input.bag", "Path to the rosbag");
@@ -37,6 +57,7 @@ DEFINE_double(radius_search, 0.05, "Size of the radius filter. (default: 0.05)")
 DEFINE_int32(min_num_neighbors, 3, "Minimum number of points for the radius filter. (default: 3)");
 
 
+
 /*
  * Load a set of events and poses from a rosbag,
  * compute the disparity space image (DSI),
@@ -45,6 +66,9 @@ DEFINE_int32(min_num_neighbors, 3, "Minimum number of points for the radius filt
  */
 int main(int argc, char** argv)
 {
+  ros::init(argc, argv, "emvs");
+  ros::NodeHandle nh_;
+  
   google::InitGoogleLogging(argv[0]);
   google::ParseCommandLineFlags(&argc, &argv, true);
   google::InstallFailureSignalHandler();
@@ -57,11 +81,12 @@ int main(int argc, char** argv)
   std::map<ros::Time, geometry_utils::Transformation> poses;
   data_loading::parse_rosbag(FLAGS_bag_filename, events, poses, camera_info_msg,
                              FLAGS_event_topic, FLAGS_camera_info_topic, FLAGS_pose_topic, FLAGS_start_time_s, FLAGS_stop_time_s);
-  
+ 
+
   // Create a camera object from the loaded intrinsic parameters
   image_geometry::PinholeCameraModel cam;
-  // camera_info_msg.width = 346;
-  // camera_info_msg.height = 260;
+  // camera_info_msg.width = 240;
+  // camera_info_msg.height = 180;
   cam.fromCameraInfo(camera_info_msg);
 
   // Use linear interpolation to compute the camera pose for each event
@@ -75,6 +100,7 @@ int main(int argc, char** argv)
   geometry_utils::Transformation T_w_rv;
   trajectory.getPoseAt(ros::Time(0.5 * (t0_.toSec() + t1_.toSec())), T_w_rv);
   geometry_utils::Transformation T_rv_w = T_w_rv.inverse();
+  //geometry_utils::Transformation T_rv_w = T1_.inverse();
   
   // Initialize the DSI
   CHECK_LE(FLAGS_dimZ, 256) << "Number of depth planes should be <= 256";
@@ -142,6 +168,46 @@ int main(int argc, char** argv)
   // Save point cloud to disk
   pcl::io::savePCDFileASCII ("pointcloud.pcd", *pc);
   LOG(INFO) << "Saved " << pc->points.size () << " data points to pointcloud.pcd";
+  // for (int i=0; i< pc->points.size(); i++)
+  // {
+  //   ROS_INFO("point %d, x: %f, y: %f, z: %f", i, pc->points[i].x, pc->points[i].y, pc->points[i].z);
+  // }
+
+  // Convert Point Clouds to Voxel Grid
+  EMVS::PointCloud::Ptr cloud_filtered (new EMVS::PointCloud);
+  float leaf_size_x = 0.1;
+  float leaf_size_y = 0.1;
+  float leaf_size_z = 0.1;
+  mapper.PCtoVoxelGrid(pc, cloud_filtered, leaf_size_x, leaf_size_y, leaf_size_z);
+
+  //Intialize PCGeometry
+  EMVS::PCGeometry geo;
+  EMVS::PointCloud::Ptr cloud_p (new EMVS::PointCloud);
+  geometry_utils::Transformation last_pose = poses.at(t1_);
+  pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients);
+  geo.FitPlanetoPC(cloud_filtered, coefficients);
   
+  Eigen::Vector4f Quat;
+  geo.PlaneRotationVector(coefficients, last_pose, Quat);
+  // Eigen::Vector4d UNfilteredPCInertial;
+  // Eigen::Vector4d pcinInertialFrame;
+  // Eigen::MatrixXd UNfilteredPCInertial;
+  // Eigen::MatrixXd pcinInertialFrame;
+  // UNfilteredPCInertial.conservativeResize(4, pc->size());
+  // pcinInertialFrame.conservativeResize(4, cloud_filtered->size());
+  geometry_msgs::Point PCInertial[cloud_filtered->size()];
+  geometry_msgs::Point point;
+  Eigen::Vector4f PlaneQuatInertial;
+  for(int i=0; i < cloud_filtered->size(); i++)
+  {
+    geo.PlaneinInertial(cloud_filtered, last_pose, Quat, PlaneQuatInertial, point, i);
+    PCInertial[i] = point;
+  }
+  //geo.NavigatetoPlane(pcinInertialFrame, PlaneQuatInertial);
+
+
+  //ros::Publisher point_cloud_pub = nh_.advertise<EMVS::PointCloud::Ptr>("/emvs_point_cloud", 1);
+  // point_cloud_pub.publish(pc->points[i].x,);
+  ros::spin();
   return 0;
 }

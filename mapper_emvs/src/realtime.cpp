@@ -1,5 +1,6 @@
 #include <mapper_emvs/data_loading.hpp>
 #include <mapper_emvs/mapper_emvs.hpp>
+#include <mapper_emvs/pc_geometry.hpp>
 
 #include <image_geometry/pinhole_camera_model.h>
 
@@ -11,11 +12,26 @@
 #include <glog/logging.h>
 
 #include <chrono>
+#include <iostream>
+#include <thread>
 
 #include <ros/ros.h>
 
 #include <sensor_msgs/Image.h>
 #include <geometry_msgs/PoseStamped.h>
+#include "geometry_msgs/Pose.h"
+#include "geometry_msgs/Point.h"
+
+#include "Mission_Management/my_msg.h"
+#include <vector>
+
+#include "std_msgs/MultiArrayLayout.h"
+#include "std_msgs/MultiArrayDimension.h"
+#include <std_msgs/Float64MultiArray.h>
+
+#include <Eigen/Core>
+#include <Eigen/Geometry>
+#include <eigen_conversions/eigen_msg.h>
 
 #include <dynamic_reconfigure/server.h>
 #include <mapper_emvs/EMVSCfgConfig.h>
@@ -25,10 +41,15 @@
 #include <pcl/registration/incremental_registration.h>
 #include <pcl/registration/icp.h>
 
+#include <std_srvs/SetBool.h>
+
+
+
 // Input parameters
 DEFINE_string(bag_filename, "input.bag", "Path to the rosbag");
 DEFINE_string(event_topic, "/dvs/events", "Name of the event topic (default: /dvs/events)");
-DEFINE_string(pose_topic, "/optitrack/davis", "Name of the pose topic (default: /optitrack/davis)");
+//DEFINE_string(event_topic, "/dvs_corner_events_soft", "Name of the event topic (default: /dvs/events)");
+DEFINE_string(pose_topic, "/ur10_pose", "Name of the pose topic (default: /optitrack/davis)");
 DEFINE_string(camera_info_topic, "/dvs/camera_info", "Name of the camera info topic (default: /dvs/camera_info)");
 DEFINE_double(start_time_s, 0.0, "Start time in seconds (default: 0.0)");
 DEFINE_double(stop_time_s, 1000.0, "Stop time in seconds (default: 1000.0)");
@@ -50,6 +71,11 @@ DEFINE_int32(median_filter_size, 5, "Size of the median filter used to clean the
 DEFINE_double(radius_search, 0.05, "Size of the radius filter. (default: 0.05)");
 DEFINE_int32(min_num_neighbors, 3, "Minimum number of points for the radius filter. (default: 3)");
 
+//Voxel Grid Parameters (size of the voxel grid to filter the point clouds after generating them)
+DEFINE_double(leaf_size_x, 0.1, "size of the voxel grid_x. (default: 0.1)");
+DEFINE_double(leaf_size_y, 0.1, "size of the voxel grid_y. (default: 0.1)");
+DEFINE_double(leaf_size_z, 0.1, "size of the voxel grid_z. (default: 0.1)");
+
 class DepthEstimator
 {
   public:
@@ -58,9 +84,8 @@ class DepthEstimator
                    float adaptive_threshold_kernel_size, float adaptive_threshold_c, float median_filter_size,
                    float radius_search, float min_num_neighbors)
     {
-      event_subs_ = ros_node_.subscribe(event_topic, 10, &DepthEstimator::EventsCallback, this);
-      cam_info_subs_ = ros_node_.subscribe(camero_info_topic, 10, &DepthEstimator::CamInfoCallback, this);
-      pose_sub = ros_node_.subscribe(pose_topic, 10, &DepthEstimator::PoseCallback, this);
+      
+      start_EMVS_service = ros_node_.advertiseService("startEMVS", &DepthEstimator::start_EMVS, this);
 
       dsi_shape_ = EMVS::ShapeDSI(dim_X, dim_Y, dim_Z,
                                 min_depth, max_depth,
@@ -76,6 +101,7 @@ class DepthEstimator
       this->map_pc_.reset(new EMVS::PointCloud);
       this->global_pc_.reset(new EMVS::PointCloud);
       this->ros_pointcloud_.reset(new sensor_msgs::PointCloud2);
+      this->ros_voxelcloud_.reset(new sensor_msgs::PointCloud2);
       this->icp_.reset(new pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI>);
       this->icp_->setMaxCorrespondenceDistance (0.05);
       this->icp_->setMaximumIterations (50);
@@ -86,7 +112,7 @@ class DepthEstimator
       f_ = boost::bind(&DepthEstimator::parameter_callback, this, _1, _2);
       server_.setCallback(f_);
     }
-
+   
   private:
       ros::NodeHandle ros_node_;
 
@@ -98,23 +124,40 @@ class DepthEstimator
 
       float update_distance_;
 
+      float leaf_size_x;
+      float leaf_size_y;
+      float leaf_size_z;
+
       std::map<ros::Time, geometry_utils::Transformation> poses_;
       std::vector<geometry_msgs::PoseStamped> pose_list_;
       std::vector<ros::Time> pose_timestaps_;
 
       geometry_msgs::PoseStamped processed_pose_;
+      
 
       ros::Publisher depthmap_publisher_ = ros_node_.advertise<sensor_msgs::Image>("depth_image", 3);
       ros::Publisher pointcloud_publisher_ = ros_node_.advertise<sensor_msgs::PointCloud2>("point_cloud", 3);
+      ros::Publisher cmd_pos_pub = ros_node_.advertise<geometry_msgs::Pose>("/ur_cmd_pose", 1);
+      ros::Publisher plane_quat_orientation_pub = ros_node_.advertise<geometry_msgs::Quaternion>("/plane_oreintation", 4);
+      ros::Publisher Voxel_pub = ros_node_.advertise<sensor_msgs::PointCloud2>("/voxel_pose", 3);
     
+      ros::Publisher hole_in_inertial_pub = ros_node_.advertise<Mission_Management::my_msg>("/hole_pos", 4);
+      
       ros::Subscriber event_subs_; 
       ros::Subscriber cam_info_subs_;
       ros::Subscriber pose_sub;
 
+      //ROS Service
+      ros::ServiceServer start_EMVS_service;
+
+      //ROS message
+      Mission_Management::my_msg PCInertial;
+  
       LinearTrajectory trajectory_;
 
       EMVS::ShapeDSI dsi_shape_;
       EMVS::MapperEMVS mapper_;
+      EMVS::PCGeometry geo_;
       cv::Mat depth_map_, confidence_map_, semidense_mask_, depth_map_255_;
       EMVS::OptionsDepthMap opts_depth_map_;
       sensor_msgs::Image ros_depth_map_;
@@ -125,34 +168,73 @@ class DepthEstimator
       EMVS::PointCloud::Ptr map_pc_;
       EMVS::PointCloud::Ptr global_pc_;
       sensor_msgs::PointCloud2::Ptr ros_pointcloud_;
+      sensor_msgs::PointCloud2::Ptr ros_voxelcloud_;
       pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI>::Ptr icp_;
       pcl::registration::IncrementalRegistration<pcl::PointXYZI> iicp_;
-      
+
+      float X_corner;
+      float Y_corner;
+
       Eigen::Matrix4d transformation_matrix = Eigen::Matrix4d::Identity();
 
       dynamic_reconfigure::Server<mapper_emvs::EMVSCfgConfig> server_;
       dynamic_reconfigure::Server<mapper_emvs::EMVSCfgConfig>::CallbackType f_;
+
+      struct Point{
+        float x;
+        float y;
+        float z;
+      };
+
+      
+      
+      bool start_EMVS(std_srvs::SetBool::Request &msg, std_srvs::SetBool::Response &msg_output)
+      { 
+        if(msg.data == 1)
+        {
+          LOG(INFO) << "Start EMVS Service";
+          event_subs_ = ros_node_.subscribe("/dvs/events", 10, &DepthEstimator::EventsCallback, this);
+          //event_subs_ = ros_node_.subscribe("/dvs_corner_events_soft", 10, &DepthEstimator::EventsCallback, this);
+          cam_info_subs_ = ros_node_.subscribe("/dvs/camera_info", 10, &DepthEstimator::CamInfoCallback, this);
+          pose_sub = ros_node_.subscribe("/ur10_pose", 10, &DepthEstimator::PoseCallback, this);
+          msg_output.success = true;
+        }
+        else 
+        {
+          LOG(INFO) << "EMVS Service Stopped";
+          event_subs_.shutdown();
+          cam_info_subs_.shutdown();
+          pose_sub.shutdown();
+          pose_initialized_ = false;
+          msg_output.success = true;
+        }
+        return 1;
+      } 
 
       void EventsCallback(const dvs_msgs::EventArray::ConstPtr &event_stream)
       {
         ROS_INFO("Event Stream Received");
         for (uint i = 0 ; i < event_stream->events.size() ; i++)
         {
-          this->events_.push_back(event_stream->events[i]);
-        }
+          if(event_stream->events[i].x < 28 || event_stream->events[i].x > 33 || event_stream->events[i].y < 28 || event_stream->events[i].y > 33 )
+          {
+            this->events_.push_back(event_stream->events[i]);
+          }
+        } 
       }
 
       void CamInfoCallback(const sensor_msgs::CameraInfo::ConstPtr &camera_info)
       {
         ROS_INFO("Camera Info Received");
         sensor_msgs::CameraInfo cam_info_ = *camera_info;
-        // cam_info_.width = 346;
-        // cam_info_.height = 260;
+        cam_info_.width = 346; //240;
+        cam_info_.height = 260; //180;
         this->cam_.fromCameraInfo(cam_info_);
         this->cam_initialized = true;
 
-        //initialize map
+        //initialize mapper
         new(&this->mapper_) EMVS::MapperEMVS(this->cam_, this->dsi_shape_);
+
         //Disable camera info callbacks
         this->cam_info_subs_.shutdown();        
       }
@@ -168,7 +250,7 @@ class DepthEstimator
 
         this->pose_list_.push_back(*camera_pose);
         this->pose_timestaps_.push_back(camera_pose->header.stamp);
-
+    
         const Eigen::Vector3d position(camera_pose->pose.position.x,
                                       camera_pose->pose.position.y,
                                       camera_pose->pose.position.z);
@@ -247,19 +329,65 @@ class DepthEstimator
         this->mapper_.getPointcloud(this->depth_map_, this->semidense_mask_, this->opts_pc_, this->pc_);
 
         pcl::transformPointCloud(*this->pc_, *this->map_pc_, this->transformation_matrix);
-        this->iicp_.registerCloud(this->map_pc_);
-        pcl::PointCloud<pcl::PointXYZI>::Ptr tmp (new pcl::PointCloud<pcl::PointXYZI>);
-        pcl::transformPointCloud (*this->map_pc_, *tmp, this->iicp_.getAbsoluteTransform ());
-        *this->global_pc_ += *tmp;
+        // this->iicp_.registerCloud(this->map_pc_);
+        // pcl::PointCloud<pcl::PointXYZI>::Ptr tmp (new pcl::PointCloud<pcl::PointXYZI>);
+        // pcl::transformPointCloud (*this->map_pc_, *tmp, this->iicp_.getAbsoluteTransform ());
+        // *this->global_pc_ += *tmp;
 
-        this->global_pc_->header.frame_id = "camera";
-        pcl::toROSMsg(*this->global_pc_, *this->ros_pointcloud_);
+        // this->global_pc_->header.frame_id = "camera";
+        this->pc_->header.frame_id = "camera";
+        pcl::toROSMsg(*this->pc_, *this->ros_pointcloud_);
         this->pointcloud_publisher_.publish(*this->ros_pointcloud_);
+
+        EMVS::PointCloud::Ptr cloud_filtered (new EMVS::PointCloud);
+        this->mapper_.PCtoVoxelGrid(this->pc_, cloud_filtered, leaf_size_x, leaf_size_y, leaf_size_z);
+
+        geometry_utils::Transformation last_pose = poses_.at(t1_);
+        pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients);
+        this->geo_.FitPlanetoPC(cloud_filtered, coefficients);
+        
+        Eigen::Vector4f Quat;
+        this->geo_.PlaneRotationVector(coefficients, last_pose, Quat);
+        
+        Eigen::Vector4f PlaneQuatInertial; 
+        geometry_msgs::Point point;
+    
+        EMVS::PointCloud::Ptr holes_pos (new EMVS::PointCloud);
+        geo_.ProjectPointsOnPlane(coefficients, cloud_filtered, holes_pos);
+        
+        for(int i=0; i < holes_pos->size(); i++)
+        {
+          this->geo_.PlaneinInertial(holes_pos, last_pose, Quat, PlaneQuatInertial, point, i);
+          PCInertial.points.push_back(point);
+        }
+
+        LOG(INFO) << "Quat W X Y Z in inertial frame :" << PlaneQuatInertial;
+        LOG(INFO) << "PCINERTAIL Points:" << PCInertial;
+
+        geometry_msgs::Quaternion PlaneQuat;
+        PlaneQuat.x = PlaneQuatInertial[1];
+        PlaneQuat.y = PlaneQuatInertial[2];
+        PlaneQuat.z = PlaneQuatInertial[3];
+        PlaneQuat.w = PlaneQuatInertial[0];
+
+        LOG(INFO) << " Pose message :" <<  PlaneQuat.x << PlaneQuat.y << PlaneQuat.z << PlaneQuat.w;
+
+        //Publish hole (voxel) position, pc position and plane orientation TODO: Correct the points to be in ROS compatibale type
+        holes_pos->header.frame_id = "camera";
+        pcl::toROSMsg(*holes_pos, *this->ros_voxelcloud_);
+        this->Voxel_pub.publish(*this->ros_voxelcloud_);
+
+        this->hole_in_inertial_pub.publish(PCInertial);
+        sleep(1);
+        this->plane_quat_orientation_pub.publish(PlaneQuat);
 
         this->events_.clear();
         this->poses_.clear();   
         this->pose_list_.clear();
         this->pose_timestaps_.clear();
+        this->PCInertial.points.clear();
+        // this->pose_sub.shutdown();
+        // this->event_subs_.shutdown();
       }
 
       void parameter_callback(mapper_emvs::EMVSCfgConfig &config, uint32_t level){
@@ -277,9 +405,14 @@ class DepthEstimator
         this->opts_depth_map_.median_filter_size_ = config.median_filter_size;
 
         this->update_distance_ = config.update_distance;
-
+        ROS_INFO("update distance %f:", this->update_distance_);
         this->opts_pc_.radius_search_ = config.radius_search;
         this->opts_pc_.min_num_neighbors_ = config.min_num_neighbors;
+
+        this->leaf_size_x = config.leaf_size_x;
+        this->leaf_size_y = config.leaf_size_y;
+        this->leaf_size_z = config.leaf_size_z;
+        ROS_INFO("leaf size x %f:", this->leaf_size_x);
       }
     
 };
@@ -295,6 +428,7 @@ int main(int argc, char** argv)
   ros::init(argc, argv, "depth_estimation");
 	ros::NodeHandle nh_;
 
+
   google::InitGoogleLogging(argv[0]);
   google::ParseCommandLineFlags(&argc, &argv, true);
   google::InstallFailureSignalHandler();
@@ -306,6 +440,7 @@ int main(int argc, char** argv)
                                 FLAGS_adaptive_threshold_kernel_size, FLAGS_adaptive_threshold_c, FLAGS_median_filter_size,
                                 FLAGS_radius_search, FLAGS_min_num_neighbors);
 
+  
   ros::spin();
 
 

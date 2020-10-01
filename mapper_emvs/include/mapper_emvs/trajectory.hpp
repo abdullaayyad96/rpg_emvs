@@ -2,6 +2,7 @@
 
 #include <map>
 #include <ros/time.h>
+#include <iostream>
 #include <mapper_emvs/geometry_utils.hpp>
 
 template<class DerivedTrajectory>
@@ -70,6 +71,7 @@ public:
   LinearTrajectory(const PoseMap& poses)
     : Trajectory(poses)
   {
+    std::cout << poses.size() << std::endl;
     CHECK_GE(poses_.size(), 2u) << "At least two poses need to be provided";
   }
 

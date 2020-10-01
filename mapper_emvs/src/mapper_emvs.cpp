@@ -1,6 +1,8 @@
 #include <mapper_emvs/mapper_emvs.hpp>
+
 #include <mapper_emvs/median_filtering.hpp>
 #include <pcl/filters/radius_outlier_removal.h>
+#include <geometry_msgs/PoseStamped.h>
 
 namespace EMVS {
 
@@ -16,8 +18,14 @@ MapperEMVS::MapperEMVS(const image_geometry::PinholeCameraModel& cam,
   height_ = full_resolution.height;//260
 
   K_ << dvs_cam_.fx(), 0.f, dvs_cam_.cx(),
-      0.f, dvs_cam_.fy(), dvs_cam_.cy(),
-      0.f, 0.f, 1.f;
+       0.f, dvs_cam_.fy(), dvs_cam_.cy(),
+       0.f, 0.f, 1.f;
+  // K_ << (float) 206.29417, 0.f          , (float) 115.647026,
+  //         0.f        , (float) 206.3225  , (float) 83.69464,
+  //         0.f        , 0.f          ,  1.f;
+
+  std::cout << K_ << std::endl;
+
 
   setupDSI();
 
@@ -58,7 +66,7 @@ bool MapperEMVS::evaluateDSI(const std::vector<dvs_msgs::Event>& events,
       current_event_++;
       continue;
     }
-
+    // from event camera to reference viewpoint
     T_rv_ev = T_rv_w * T_w_ev;
 
     const Transformation T_ev_rv = T_rv_ev.inverse();
@@ -176,7 +184,7 @@ void MapperEMVS::setupDSI()
 
   dsi_shape_.dimX_ = (dsi_shape_.dimX_ > 0) ? dsi_shape_.dimX_ : dvs_cam_.fullResolution().width;
   dsi_shape_.dimY_ = (dsi_shape_.dimY_ > 0) ? dsi_shape_.dimY_ : dvs_cam_.fullResolution().height;
-
+  
   float f_virtual_cam_;
   if (dsi_shape_.fov_ < 10.f)
   {
@@ -193,7 +201,7 @@ void MapperEMVS::setupDSI()
   virtual_cam_ = PinholeCamera(dsi_shape_.dimX_, dsi_shape_.dimY_,
                                f_virtual_cam_, f_virtual_cam_,
                                0.5 * (float)dsi_shape_.dimX_, 0.5 * (float)dsi_shape_.dimY_);
-  
+    
   dsi_ = Grid3D(dsi_shape_.dimX_, dsi_shape_.dimY_, dsi_shape_.dimZ_);
 }
 
@@ -207,6 +215,7 @@ void MapperEMVS::precomputeRectifiedPoints()
     for(int x=0; x < width_; ++x)
     {
       cv::Point2d rectified_point = dvs_cam_.rectifyPoint(cv::Point2d(x,y));//cv::Point2d(x,y);
+      //cv::Point2d rectified_point = cv::Point2d(x,y);
       precomputed_rectified_points_.col(y * width_ + x) = Eigen::Vector2f(rectified_point.x, rectified_point.y);
     }
   }
@@ -321,6 +330,23 @@ void MapperEMVS::getPointcloud(const cv::Mat& depth_map,
   outlier_rm.filter(*cloud_filtered);
 
   pc_->swap(*cloud_filtered);
+}
+
+void MapperEMVS::PCtoVoxelGrid(PointCloud::Ptr cloud, PointCloud::Ptr cloud_filtered, float leaf_size_x, float leaf_size_y, float leaf_size_z)
+{
+ 
+  std::cerr << "PointCloud before filtering: " << cloud->width * cloud->height 
+       << " data points (" << pcl::getFieldsList (*cloud) << ")." << std::endl;
+
+  // Create the filtering object
+  pcl::VoxelGrid<PointType> sor;
+  sor.setInputCloud (cloud);
+  sor.setLeafSize (leaf_size_x, leaf_size_y, leaf_size_z);
+  sor.filter (*cloud_filtered);
+
+  std::cerr << "PointCloud after filtering: " << cloud_filtered->width * cloud_filtered->height 
+       << " data points (" << pcl::getFieldsList (*cloud_filtered) << ")." << std::endl;
+
 }
 
 }
