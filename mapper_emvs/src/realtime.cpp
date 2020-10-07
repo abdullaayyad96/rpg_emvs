@@ -128,6 +128,10 @@ class DepthEstimator
       float leaf_size_y;
       float leaf_size_z;
 
+      bool apply_color_mask = false;
+
+      std::vector<cv::Point> image_contour;
+
       std::map<ros::Time, geometry_utils::Transformation> poses_;
       std::vector<geometry_msgs::PoseStamped> pose_list_;
       std::vector<ros::Time> pose_timestaps_;
@@ -135,17 +139,20 @@ class DepthEstimator
       geometry_msgs::PoseStamped processed_pose_;
       
 
-      ros::Publisher depthmap_publisher_ = ros_node_.advertise<sensor_msgs::Image>("depth_image", 3);
-      ros::Publisher pointcloud_publisher_ = ros_node_.advertise<sensor_msgs::PointCloud2>("point_cloud", 3);
+      ros::Publisher depthmap_publisher_ = ros_node_.advertise<sensor_msgs::Image>("depth_image", 1);
+      ros::Publisher pointcloud_publisher_ = ros_node_.advertise<sensor_msgs::PointCloud2>("point_cloud", 1);
       ros::Publisher cmd_pos_pub = ros_node_.advertise<geometry_msgs::Pose>("/ur_cmd_pose", 1);
-      ros::Publisher plane_quat_orientation_pub = ros_node_.advertise<geometry_msgs::Quaternion>("/plane_oreintation", 4);
-      ros::Publisher Voxel_pub = ros_node_.advertise<sensor_msgs::PointCloud2>("/voxel_pose", 3);
+      ros::Publisher plane_quat_orientation_pub = ros_node_.advertise<geometry_msgs::Quaternion>("/plane_oreintation", 1);
+      ros::Publisher Voxel_pub = ros_node_.advertise<sensor_msgs::PointCloud2>("/voxel_pose", 1);
+      ros::Publisher annotated_image_publisher = ros_node_.advertise<sensor_msgs::Image>("/annotated_image", 1);
     
-      ros::Publisher hole_in_inertial_pub = ros_node_.advertise<Mission_Management::my_msg>("/hole_pos", 4);
+      ros::Publisher hole_in_inertial_pub = ros_node_.advertise<Mission_Management::my_msg>("/hole_pos", 1);
       
       ros::Subscriber event_subs_; 
       ros::Subscriber cam_info_subs_;
       ros::Subscriber pose_sub;
+      ros::Subscriber image_sub;
+
 
       //ROS Service
       ros::ServiceServer start_EMVS_service;
@@ -193,10 +200,11 @@ class DepthEstimator
         if(msg.data == 1)
         {
           LOG(INFO) << "Start EMVS Service";
-          event_subs_ = ros_node_.subscribe("/dvs/events", 10, &DepthEstimator::EventsCallback, this);
+          event_subs_ = ros_node_.subscribe("/dvs/events", 1, &DepthEstimator::EventsCallback, this);
           //event_subs_ = ros_node_.subscribe("/dvs_corner_events_soft", 10, &DepthEstimator::EventsCallback, this);
-          cam_info_subs_ = ros_node_.subscribe("/dvs/camera_info", 10, &DepthEstimator::CamInfoCallback, this);
-          pose_sub = ros_node_.subscribe("/ur10_pose", 10, &DepthEstimator::PoseCallback, this);
+          cam_info_subs_ = ros_node_.subscribe("/dvs/camera_info", 1, &DepthEstimator::CamInfoCallback, this);
+          pose_sub = ros_node_.subscribe("/ur10_pose", 1, &DepthEstimator::PoseCallback, this);
+          image_sub = ros_node_.subscribe("/dvs/image_raw", 1, &DepthEstimator::ImageCallback, this);
           msg_output.success = true;
         }
         else 
@@ -205,6 +213,7 @@ class DepthEstimator
           event_subs_.shutdown();
           cam_info_subs_.shutdown();
           pose_sub.shutdown();
+          image_sub.shutdown();
           pose_initialized_ = false;
           msg_output.success = true;
         }
@@ -218,9 +227,67 @@ class DepthEstimator
         {
           if(event_stream->events[i].x < 28 || event_stream->events[i].x > 33 || event_stream->events[i].y < 28 || event_stream->events[i].y > 33 )
           {
-            this->events_.push_back(event_stream->events[i]);
+            if (this->apply_color_mask)
+            {
+              if (this->image_contour.size() > 0)
+              {
+                if (cv::pointPolygonTest(this->image_contour, cv::Point2f(event_stream->events[i].x, event_stream->events[i].y), false))
+                {
+                  this->events_.push_back(event_stream->events[i]);
+                }
+              }
+            }
+            else
+            {
+              this->events_.push_back(event_stream->events[i]);
+            }
           }
         } 
+      }
+
+      void ImageCallback(const sensor_msgs::ImageConstPtr& input_image)
+      {
+        ROS_INFO("Image Received");
+        cv_bridge::CvImagePtr input_image_bridge = cv_bridge::toCvCopy(input_image, input_image->encoding);
+
+        cv::Mat cv_image = input_image_bridge->image;
+
+        //convert to HSV
+        cv::Mat hsv_image;
+        cv::cvtColor(cv_image, hsv_image, CV_RGB2HSV);
+
+
+        //Threshold RGB image
+        cv::Mat threshold_image;
+        cv::inRange(hsv_image, cv::Scalar(55, 100, 30), cv::Scalar(80, 255, 200), threshold_image);
+
+        //Contour detection
+        std::vector<std::vector<cv::Point>> contours;
+        cv::Mat contour_erode_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5));
+	      cv::erode(threshold_image, threshold_image, contour_erode_kernel);
+	      cv::findContours(threshold_image, contours, cv::RETR_CCOMP, cv::CHAIN_APPROX_SIMPLE);
+
+        //find largest contour
+        int largest_ctr_size =0;
+        int largest_ctr_idx = 0;
+        for (int j=0 ; j<contours.size(); j++)
+        {
+          if(contours[j].size() > largest_ctr_size)
+          {
+            largest_ctr_size = contours[j].size();
+            largest_ctr_idx = j;
+          }
+        }
+
+        this->image_contour = contours[largest_ctr_idx];
+  
+        cv::drawContours(cv_image, contours, largest_ctr_idx, cv::Scalar(255,0,0));
+
+        input_image_bridge->image = cv_image;
+        sensor_msgs::Image output_image;
+        input_image_bridge->toImageMsg(output_image);
+        this->annotated_image_publisher.publish(output_image);
+        
       }
 
       void CamInfoCallback(const sensor_msgs::CameraInfo::ConstPtr &camera_info)
@@ -336,7 +403,8 @@ class DepthEstimator
 
         // this->global_pc_->header.frame_id = "camera";
         this->pc_->header.frame_id = "camera";
-        pcl::toROSMsg(*this->pc_, *this->ros_pointcloud_);
+        this->map_pc_->header.frame_id = "map";
+        pcl::toROSMsg(*this->map_pc_, *this->ros_pointcloud_);
         this->pointcloud_publisher_.publish(*this->ros_pointcloud_);
 
         EMVS::PointCloud::Ptr cloud_filtered (new EMVS::PointCloud);
@@ -373,8 +441,11 @@ class DepthEstimator
         LOG(INFO) << " Pose message :" <<  PlaneQuat.x << PlaneQuat.y << PlaneQuat.z << PlaneQuat.w;
 
         //Publish hole (voxel) position, pc position and plane orientation TODO: Correct the points to be in ROS compatibale type
+        EMVS::PointCloud::Ptr holes_pos_intertial (new EMVS::PointCloud);
+        pcl::transformPointCloud(*holes_pos, *holes_pos_intertial, this->transformation_matrix);
+        holes_pos_intertial->header.frame_id = "map";
         holes_pos->header.frame_id = "camera";
-        pcl::toROSMsg(*holes_pos, *this->ros_voxelcloud_);
+        pcl::toROSMsg(*holes_pos_intertial, *this->ros_voxelcloud_);
         this->Voxel_pub.publish(*this->ros_voxelcloud_);
 
         this->hole_in_inertial_pub.publish(PCInertial);
@@ -413,6 +484,8 @@ class DepthEstimator
         this->leaf_size_y = config.leaf_size_y;
         this->leaf_size_z = config.leaf_size_z;
         ROS_INFO("leaf size x %f:", this->leaf_size_x);
+
+        this->apply_color_mask = config.color_masking;
       }
     
 };
