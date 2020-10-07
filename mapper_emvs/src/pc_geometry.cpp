@@ -62,9 +62,18 @@ void PCGeometry::PlaneRotationVector(pcl::ModelCoefficients::Ptr coefficients, g
   Eigen::Vector3f Y(0,1,0);
   Eigen::Vector3f Z(0,0,1);
   RotationVector = NormaltoPlane.cross(Z);
-  RotationVector = RotationVector/RotationVector.norm();
-  
-  float RotAngle = acos(NormaltoPlane.dot(Z)/RotationVector.norm());
+
+  float RotAngle = 0;
+  if (RotationVector.norm() > std::numeric_limits<float>::epsilon())
+  {
+    RotationVector = RotationVector/RotationVector.norm();  
+    RotAngle = acos(NormaltoPlane.dot(Z)/NormaltoPlane.norm());
+  }
+  else
+  {
+    RotAngle = 0;
+    RotationVector << 0, 0, 0;
+  }  
   
   // Find Quaternion of the roatation vector
   Quat[0] = cos(RotAngle/2);
@@ -73,9 +82,9 @@ void PCGeometry::PlaneRotationVector(pcl::ModelCoefficients::Ptr coefficients, g
   Quat[3] = RotationVector[2] * sin(RotAngle/2);
 
   LOG(INFO) << "Rot Angle :" << RotAngle*(180/3.14);
-  LOG(INFO) << "Rot Vector :" << RotationVector[0] << RotationVector[1] << RotationVector[2];
+  LOG(INFO) << "Rot Vector :" << RotationVector[0] << ", " << RotationVector[1] << ", " << RotationVector[2];
   
-  LOG(INFO) << "Quat X Y Z W :" << Quat[1] << Quat[2] << Quat[3] << Quat[0];
+  LOG(INFO) << "Quat X Y Z W :" << Quat[1] << ", " << Quat[2] << ", " << Quat[3] << ", " << Quat[0];
   
 }
 
@@ -91,7 +100,7 @@ void PCGeometry::ProjectPointsOnPlane(pcl::ModelCoefficients::Ptr coefficients, 
   Eigen::Vector3f PointOnPlane;
   PointOnPlane[0] = coefficients->values[0];
   PointOnPlane[1] = coefficients->values[1];
-  PointOnPlane[2] = -coefficients->values[3] - (std::pow(PointOnPlane[0],2) + std::pow(PointOnPlane[1],2));
+  PointOnPlane[2] = -coefficients->values[3] - (std::pow(PointOnPlane[0],2) + std::pow(PointOnPlane[1],2)) / coefficients->values[2]; //TODO: zero divisiin check
   
   Eigen::Vector3f ParallelToNormal;
   Eigen::Vector3f PerpendicularToNormal;
@@ -101,7 +110,7 @@ void PCGeometry::ProjectPointsOnPlane(pcl::ModelCoefficients::Ptr coefficients, 
     DispVect[0] = cloud_filtered->points[i].x - PointOnPlane[0];
     DispVect[1] = cloud_filtered->points[i].y - PointOnPlane[1];
     DispVect[2] = cloud_filtered->points[i].z - PointOnPlane[2];
-    ParallelToNormal = (DispVect.dot(NormaltoPlane)) * NormaltoPlane;
+    ParallelToNormal = ((DispVect.dot(NormaltoPlane))/std::pow(NormaltoPlane.norm(),2)) * NormaltoPlane;
     PerpendicularToNormal = DispVect - ParallelToNormal;
   
     EMVS::PointType P;
