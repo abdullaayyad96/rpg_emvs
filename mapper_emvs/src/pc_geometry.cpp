@@ -61,7 +61,7 @@ void PCGeometry::PlaneRotationVector(pcl::ModelCoefficients::Ptr coefficients, g
   Eigen::Vector3f X(1,0,0);
   Eigen::Vector3f Y(0,1,0);
   Eigen::Vector3f Z(0,0,1);
-  RotationVector = NormaltoPlane.cross(Z);
+  RotationVector = Z.cross(NormaltoPlane); //TODO: check all rotations
 
   float RotAngle = 0;
   if (RotationVector.norm() > std::numeric_limits<float>::epsilon())
@@ -128,11 +128,19 @@ void PCGeometry::PlaneinInertial(PointCloud::Ptr holes_pos, geometry_utils::Tran
   //Get Camera pose
   kindr::minimal::RotationQuaternion CamPose = last_pose.getRotation();
 
+  //Transform from camera frame to inertial frame //TODO: check all rotations
+  // PlaneQuatInertial[0] = Quat[0] * CamPose.w() - Quat[1] * CamPose.x() - Quat[2] * CamPose.y() - Quat[3] * CamPose.z();  // 1
+  // PlaneQuatInertial[1] = Quat[0] * CamPose.x() + Quat[1] * CamPose.w() + Quat[2] * CamPose.z() - Quat[3] * CamPose.y();  // i
+  // PlaneQuatInertial[2] = Quat[0] * CamPose.y() - Quat[1] * CamPose.z() + Quat[2] * CamPose.w() + Quat[3] * CamPose.x();  // j
+  // PlaneQuatInertial[3] = Quat[0] * CamPose.z() + Quat[1] * CamPose.y() - Quat[2] * CamPose.x() + Quat[3] * CamPose.w();  // k
+
+  Eigen::Vector4f CamPoseQuat;
+  CamPoseQuat <<  CamPose.w(), CamPose.x(), CamPose.y(), CamPose.z();
   //Transform from camera frame to inertial frame 
-  PlaneQuatInertial[0] = Quat[0] * CamPose.w() - Quat[1] * CamPose.x() - Quat[2] * CamPose.y() - Quat[3] * CamPose.z();  // 1
-  PlaneQuatInertial[1] = Quat[0] * CamPose.x() + Quat[1] * CamPose.w() + Quat[2] * CamPose.z() - Quat[3] * CamPose.y();  // i
-  PlaneQuatInertial[2] = Quat[0] * CamPose.y() - Quat[1] * CamPose.z() + Quat[2] * CamPose.w() + Quat[3] * CamPose.x();  // j
-  PlaneQuatInertial[3] = Quat[0] * CamPose.z() + Quat[1] * CamPose.y() - Quat[2] * CamPose.x() + Quat[3] * CamPose.w();  // k
+  PlaneQuatInertial[0] = CamPoseQuat[0] * Quat[0] - CamPoseQuat[1] * Quat[1] - CamPoseQuat[2] * Quat[2] - CamPoseQuat[3] * Quat[3];  // 1
+  PlaneQuatInertial[1] = CamPoseQuat[0] * Quat[1] + CamPoseQuat[1] * Quat[0] + CamPoseQuat[2] * Quat[3] - CamPoseQuat[3] * Quat[2];  // i
+  PlaneQuatInertial[2] = CamPoseQuat[0] * Quat[2] - CamPoseQuat[1] * Quat[3] + CamPoseQuat[2] * Quat[0] + CamPoseQuat[3] * Quat[1];  // j
+  PlaneQuatInertial[3] = CamPoseQuat[0] * Quat[3] + CamPoseQuat[1] * Quat[2] - CamPoseQuat[2] * Quat[1] + CamPoseQuat[3] * Quat[0];  // k
 
   Eigen::Matrix4d TransformationMat = last_pose.getTransformationMatrix();
 
@@ -142,7 +150,7 @@ void PCGeometry::PlaneinInertial(PointCloud::Ptr holes_pos, geometry_utils::Tran
 
   pcinCamFrame[0] = holes_pos->points[i].x;
   pcinCamFrame[1] = holes_pos->points[i].y;
-  pcinCamFrame[2] = holes_pos->points[i].z - 0.25;
+  pcinCamFrame[2] = holes_pos->points[i].z;
   pcinCamFrame[3] = 1.0;
   pcinInertialFrame = TransformationMat * pcinCamFrame;
   point.x = pcinInertialFrame[0];

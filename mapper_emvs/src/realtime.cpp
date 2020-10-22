@@ -267,27 +267,29 @@ class DepthEstimator
 	      cv::erode(threshold_image, threshold_image, contour_erode_kernel);
 	      cv::findContours(threshold_image, contours, cv::RETR_CCOMP, cv::CHAIN_APPROX_SIMPLE);
 
-        //find largest contour
-        int largest_ctr_size =0;
-        int largest_ctr_idx = 0;
-        for (int j=0 ; j<contours.size(); j++)
+        if (contours.size() > 0)
         {
-          if(contours[j].size() > largest_ctr_size)
+          //find largest contour
+          int largest_ctr_size =0;
+          int largest_ctr_idx = 0;
+          for (int j=0 ; j<contours.size(); j++)
           {
-            largest_ctr_size = contours[j].size();
-            largest_ctr_idx = j;
+            if(contours[j].size() > largest_ctr_size)
+            {
+              largest_ctr_size = contours[j].size();
+              largest_ctr_idx = j;
+            }
           }
+
+          this->image_contour = contours[largest_ctr_idx];
+    
+          cv::drawContours(cv_image, contours, largest_ctr_idx, cv::Scalar(255,0,0));
+
+          input_image_bridge->image = cv_image;
+          sensor_msgs::Image output_image;
+          input_image_bridge->toImageMsg(output_image);
+          this->annotated_image_publisher.publish(output_image);
         }
-
-        this->image_contour = contours[largest_ctr_idx];
-  
-        cv::drawContours(cv_image, contours, largest_ctr_idx, cv::Scalar(255,0,0));
-
-        input_image_bridge->image = cv_image;
-        sensor_msgs::Image output_image;
-        input_image_bridge->toImageMsg(output_image);
-        this->annotated_image_publisher.publish(output_image);
-        
       }
 
       void CamInfoCallback(const sensor_msgs::CameraInfo::ConstPtr &camera_info)
