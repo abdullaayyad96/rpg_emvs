@@ -107,6 +107,11 @@ public:
   
   void getDepthMapFromDSI(cv::Mat& depth_map, cv::Mat &confidence_map, cv::Mat &mask, const OptionsDepthMap &options_depth_map);
 
+  void getIntersectionPointCloudFromDSI(const OptionsDepthMap &options_depth_map, const OptionsPointCloud &options_pc, std::vector<Eigen::Vector3f>* start_point_vec,  std::vector<Eigen::Vector3f>* end_point_vec, PointCloud::Ptr &pc_);
+  
+  Eigen::Vector3d getIntersectionPoint(std::vector<Eigen::Vector3f> start_point_vectors, std::vector<Eigen::Vector3f> end_point_vectors);
+
+  
   void getPointcloud(const cv::Mat& depth_map,
                             const cv::Mat& mask,
                             const OptionsPointCloud &options_pc,
@@ -140,6 +145,9 @@ private:
   void convertDepthIndicesToValues(const cv::Mat &depth_cell_indices, cv::Mat &depth_map);
 
   void removeMaskBoundary(cv::Mat& mask, int border_size);
+
+  void getIntersectionPointCloudFromDSI(const OptionsDepthMap &options_depth_map, const OptionsPointCloud &options_pc, std::vector<Eigen::Vector3f>* start_point_vec,  std::vector<Eigen::Vector3f>* end_point_vec, PointCloud::Ptr &pc_);
+
   
 
   // Intrinsics of the camera

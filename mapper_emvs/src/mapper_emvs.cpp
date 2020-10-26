@@ -112,6 +112,7 @@ bool MapperEMVS::evaluateDSI(const std::vector<dvs_msgs::Event>& events,
   }
 
   dsi_.resetGrid();
+  // LOG(INFO) << "Fill voxel";
   fillVoxelGrid(event_locations_z0, camera_centers);
 
   return true;
@@ -139,6 +140,9 @@ void MapperEMVS::fillVoxelGrid(const std::vector<Eigen::Vector4f>& event_locatio
   {
     const Eigen::Vector4f* pe = &event_locations_z0[0];
     float *pgrid = dsi_.getPointerToSlice(depth_plane);
+    // LOG(INFO) << "Get pointer";
+    std::vector<Eigen::Vector3f>* vector_grid = dsi_.getPointerToVectorSlice(depth_plane);
+    std::vector<Eigen::Vector3f>* camera_center_grid = dsi_.getPointerToCameraCenter(depth_plane);
 
     for (size_t packet=0; packet < camera_centers.size(); ++packet)
     {
@@ -166,7 +170,9 @@ void MapperEMVS::fillVoxelGrid(const std::vector<Eigen::Vector4f>& event_locatio
         for (size_t i=0; i < N; ++i)
         {
           // Bilinear voting
-          dsi_.accumulateGridValueAt(X[i], Y[i], pgrid);
+          // LOG(INFO) << "bilinear vote";
+          dsi_.accumulateGridValueAt(X[i], Y[i], pe[i], camera_centers[packet], z0, pgrid, vector_grid, camera_center_grid, virtual_cam_.Kinv_);
+          // LOG(INFO) << "bilinear vote out";
         }
       }
     }
@@ -251,7 +257,6 @@ void MapperEMVS::removeMaskBoundary(cv::Mat& mask, int border_size)
   }
 }
 
-
 void MapperEMVS::getDepthMapFromDSI(cv::Mat& depth_map, cv::Mat &confidence_map, cv::Mat &mask, const OptionsDepthMap &options_depth_map)
 {
   // Reference: Section 5.2.3 in the IJCV paper.
@@ -287,6 +292,98 @@ void MapperEMVS::getDepthMapFromDSI(cv::Mat& depth_map, cv::Mat &confidence_map,
 
   // Convert depth indices to depth values
   convertDepthIndicesToValues(depth_cell_indices_filtered, depth_map);
+}
+
+void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options_depth_map, const OptionsPointCloud &options_pc, std::vector<Eigen::Vector3f>* start_point_vec,  std::vector<Eigen::Vector3f>* end_point_vec, PointCloud::Ptr &pc_)
+{
+  // Reference: Section 5.2.3 in the IJCV paper.
+
+  // Maximum number of votes along optical ray
+  cv::Mat depth_map, confidence_map, mask, depth_cell_indices;
+  dsi_.collapseMaxZSlice(&confidence_map, &depth_cell_indices);
+  
+  // Adaptive thresholding on the confidence map
+  cv::Mat confidence_8bit;
+  cv::normalize(confidence_map, confidence_8bit, 0.0, 255.0, cv::NORM_MINMAX);
+  confidence_8bit.convertTo(confidence_8bit, CV_8U);
+  
+  cv::adaptiveThreshold(confidence_8bit,
+                        mask,
+                        1,
+                        cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+                        cv::THRESH_BINARY,
+                        options_depth_map.adaptive_threshold_kernel_size_,
+                        -options_depth_map.adaptive_threshold_c_);
+  
+  //Extract passing vectors
+  for(int y=0; y<depth_cell_indices.rows; ++y)
+  {
+    for(int x=0; x<depth_cell_indices.cols; ++x)
+    {
+      start_point_vec[y*depth_cell_indices.cols + x] = dsi_.getVectorsAt(x, y, depth_cell_indices.at<uchar>(y, x));
+      end_point_vec[y*depth_cell_indices.cols + x] = dsi_.getCameraCentersAt(x, y, depth_cell_indices.at<uchar>(y, x));
+    }
+  }
+  
+  //Check intersecting vectors at maximum confidence point
+  // cv::Point minLoc, maxLoc; 
+  // double minVal, maxVal;
+  // cv::minMaxLoc(confidence_map, &minVal, &maxVal, &minLoc, &maxLoc);
+  // std::vector<Eigen::Vector3f> best_intersecting_vectors = dsi_.getVectorsAt(maxLoc.x, maxLoc.y, depth_cell_indices.at<uchar>(maxLoc.y, maxLoc.x));
+  // std::vector<Eigen::Vector3f> camera_centers = dsi_.getCameraCentersAt(maxLoc.x, maxLoc.y, depth_cell_indices.at<uchar>(maxLoc.y, maxLoc.x));
+  // LOG(INFO) << "Best Intersecting vectors: ";
+  // for (uint8_t i=0; i<10 ; i++)
+  // {
+  //   int j = rand() * best_intersecting_vectors.size() / RAND_MAX;
+  //   LOG(INFO) << "Camera Center: ";
+  //   LOG(INFO) << camera_centers[j];
+  //   LOG(INFO) << "Vector: ";
+  //   LOG(INFO) << best_intersecting_vectors[j];
+  // }
+
+  
+
+  // Clean up depth map using median filter (Section 5.2.5 in the IJCV paper)
+  cv::Mat depth_cell_indices_filtered;
+  huangMedianFilter(depth_cell_indices,
+                    depth_cell_indices_filtered,
+                    mask,
+                    options_depth_map.median_filter_size_);
+
+  // Remove the outer border to suppress boundary effects
+  const int border_size = std::max(options_depth_map.adaptive_threshold_kernel_size_ / 2, 1);
+  removeMaskBoundary(mask, border_size);
+
+  // Convert depth indices to depth values
+  // BearingVector b_rv = virtual_cam_.projectPixelTo3dRay(Keypoint(maxLoc.x, maxLoc.y));
+  // b_rv.normalize();
+  // Eigen::Vector3d xyz_rv = (b_rv / b_rv[2] * depth_map.at<float>(maxLoc.y, maxLoc.x));
+  // LOG(INFO) << xyz_rv;
+  pc_->clear();
+  for(int y=0; y<mask.rows; ++y)
+  {
+    for(int x=0; x<mask.cols; ++x)
+    {
+      if(mask.at<uint8_t>(y,x) > 0)
+      {
+        Eigen::Vector3d xyz_rv = this->getIntersectionPoint(start_point_vec[y*depth_cell_indices.cols + x], end_point_vec[y*depth_cell_indices.cols + x]);
+
+        pcl::PointXYZI p_rv; // 3D point in reference view
+        p_rv.x = xyz_rv.x();
+        p_rv.y = xyz_rv.y();
+        p_rv.z = xyz_rv.z();
+        p_rv.intensity = 1.0 / p_rv.z;
+        pc_->push_back(p_rv);
+      }
+    } 
+  }
+}
+
+
+Eigen::Vector3d MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> start_point_vectors, std::vector<Eigen::Vector3f> end_point_vectors)
+{
+  //TODO: get intersections
+  return Eigen::Vector3d::Zero();
 }
 
 

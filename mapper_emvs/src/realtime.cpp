@@ -394,8 +394,13 @@ class DepthEstimator
 
         this->depthmap_publisher_.publish(this->ros_depth_map_);
 
-        ROS_INFO("converting to Point Cloud ...");    
-        this->mapper_.getPointcloud(this->depth_map_, this->semidense_mask_, this->opts_pc_, this->pc_);
+        ROS_INFO("converting to Point Cloud ...");           
+        std::vector<std::vector<Eigen::Vector3f>> start_point_vec, end_point_vec;
+        start_point_vec.resize(dsi_shape_.dimX_  * dsi_shape_.dimY_);
+        end_point_vec.resize(dsi_shape_.dimX_  * dsi_shape_.dimY_);
+
+        //this->mapper_.getPointcloud(this->depth_map_, this->semidense_mask_, this->opts_pc_, this->pc_);
+        this->mapper_.getIntersectionPointCloudFromDSI(this->opts_depth_map_, this->opts_pc_, &start_point_vec.data()[0],  &end_point_vec.data()[0], this->pc_);
 
         pcl::transformPointCloud(*this->pc_, *this->map_pc_, this->transformation_matrix);
         // this->iicp_.registerCloud(this->map_pc_);
@@ -458,9 +463,11 @@ class DepthEstimator
         this->poses_.clear();   
         this->pose_list_.clear();
         this->pose_timestaps_.clear();
-        this->PCInertial.points.clear();
-        // this->pose_sub.shutdown();
-        // this->event_subs_.shutdown();
+        this->PCInertial.points.clear();        
+        event_subs_.shutdown();
+        cam_info_subs_.shutdown();
+        pose_sub.shutdown();
+        image_sub.shutdown();
       }
 
       void parameter_callback(mapper_emvs::EMVSCfgConfig &config, uint32_t level){

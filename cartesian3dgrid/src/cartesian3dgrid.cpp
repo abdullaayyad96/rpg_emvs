@@ -24,6 +24,8 @@ void Grid3D::allocate(const unsigned int dimX, const unsigned int dimY, const un
   size_[2] = dimZ;
   numCells_ = size_[0]*size_[1]*size_[2];
   data_array_.resize(numCells_);
+  passing_vector_array_.resize(numCells_);
+  camera_centers_.resize(numCells_);
   resetGrid();
 }
 
@@ -38,6 +40,8 @@ void Grid3D::deallocate()
 {
   size_[0] = size_[1] = size_[2] = 0;
   data_array_.clear();
+  passing_vector_array_.clear();
+  camera_centers_.clear();
 }
 
 
@@ -50,6 +54,8 @@ void Grid3D::printInfo() const
 void Grid3D::resetGrid()
 {
   std::fill(data_array_.begin(), data_array_.end(), 0.f);
+  std::fill(passing_vector_array_.begin(), passing_vector_array_.end(), std::vector<Eigen::Vector3f>());
+  std::fill(camera_centers_.begin(), camera_centers_.end(), std::vector<Eigen::Vector3f>());
 }
 
 
