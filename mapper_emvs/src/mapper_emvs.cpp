@@ -294,9 +294,12 @@ void MapperEMVS::getDepthMapFromDSI(cv::Mat& depth_map, cv::Mat &confidence_map,
   convertDepthIndicesToValues(depth_cell_indices_filtered, depth_map);
 }
 
-void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options_depth_map, const OptionsPointCloud &options_pc, std::vector<Eigen::Vector3f>* start_point_vec,  std::vector<Eigen::Vector3f>* end_point_vec, PointCloud::Ptr &pc_)
+void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options_depth_map, const OptionsPointCloud &options_pc, PointCloud::Ptr &pc_)
 {
   // Reference: Section 5.2.3 in the IJCV paper.
+  std::vector<std::vector<Eigen::Vector3f>> start_point_vec, end_point_vec;
+  start_point_vec.resize(width_  * height_);
+  end_point_vec.resize(width_ * height_);
 
   // Maximum number of votes along optical ray
   cv::Mat depth_map, confidence_map, mask, depth_cell_indices;
@@ -315,6 +318,7 @@ void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options
                         options_depth_map.adaptive_threshold_kernel_size_,
                         -options_depth_map.adaptive_threshold_c_);
   
+  LOG(INFO) << "Get passing vectors";
   //Extract passing vectors
   for(int y=0; y<depth_cell_indices.rows; ++y)
   {
@@ -343,6 +347,7 @@ void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options
 
   
 
+  LOG(INFO) << "Clean depth map vectors";
   // Clean up depth map using median filter (Section 5.2.5 in the IJCV paper)
   cv::Mat depth_cell_indices_filtered;
   huangMedianFilter(depth_cell_indices,
@@ -354,6 +359,7 @@ void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options
   const int border_size = std::max(options_depth_map.adaptive_threshold_kernel_size_ / 2, 1);
   removeMaskBoundary(mask, border_size);
 
+  LOG(INFO) << "Get intercetions points";
   // Convert depth indices to depth values
   // BearingVector b_rv = virtual_cam_.projectPixelTo3dRay(Keypoint(maxLoc.x, maxLoc.y));
   // b_rv.normalize();
@@ -366,7 +372,9 @@ void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options
     {
       if(mask.at<uint8_t>(y,x) > 0)
       {
-        Eigen::Vector3d xyz_rv = this->getIntersectionPoint(start_point_vec[y*depth_cell_indices.cols + x], end_point_vec[y*depth_cell_indices.cols + x]);
+        LOG(INFO) << "Get specific intersection point";
+        Eigen::Vector3f xyz_rv = this->getIntersectionPoint(start_point_vec[y*depth_cell_indices.cols + x], end_point_vec[y*depth_cell_indices.cols + x]);
+        LOG(INFO) << "Got specific intersection point";
 
         pcl::PointXYZI p_rv; // 3D point in reference view
         p_rv.x = xyz_rv.x();
@@ -374,16 +382,73 @@ void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options
         p_rv.z = xyz_rv.z();
         p_rv.intensity = 1.0 / p_rv.z;
         pc_->push_back(p_rv);
+        LOG(INFO) << "Contruct i'th point in pointcloud";
       }
     } 
   }
 }
 
 
-Eigen::Vector3d MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> start_point_vectors, std::vector<Eigen::Vector3f> end_point_vectors)
+Eigen::Vector3f MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> start_point_vectors, std::vector<Eigen::Vector3f> end_point_vectors)
 {
-  //TODO: get intersections
-  return Eigen::Vector3d::Zero();
+  Eigen::MatrixXf start_points(3, start_point_vectors.size());
+  Eigen::MatrixXf end_points(3, start_point_vectors.size());
+  Eigen::MatrixXf PA(start_point_vectors.size(),3); //NOTE: initiate number of rows based on the number of vectors we have
+  Eigen::MatrixXf PB(end_point_vectors.size(),3);
+  Eigen::MatrixXf Si;
+  Eigen::MatrixXf Si_pow;
+  Eigen::MatrixXf ni;
+  Eigen::Matrix3f S;
+  Eigen::VectorXf nx;
+  Eigen::VectorXf ny;
+  Eigen::VectorXf nz;
+  Eigen::Vector3f C;
+  Eigen::Vector3f P_intersect;
+
+  LOG(INFO) << "Convert to matrix";  
+  for(int i=0; i<start_point_vectors.size(); i++)
+  {
+    start_points.col(i) = start_point_vectors[i];
+    end_points.col(i) = end_point_vectors[i];
+  }
+
+  PA = start_points.transpose();
+  PB = end_points.transpose();
+
+  Si = PB - PA;
+
+  LOG(INFO) << "Start code";  
+  Si_pow = Eigen::sqrt(Eigen::square(Si.array()).rowwise().sum());
+
+  ni = Si.array()/(Si_pow*Eigen::MatrixXf::Ones(1,3)).array();
+
+  nx = ni.col(0);
+  ny = ni.col(1); 
+  nz = ni.col(2); 
+
+  float SXX = (pow(nx.array(), 2) - 1).sum();
+  float SYY = (pow(ny.array(), 2) - 1).sum();
+  float SZZ = (pow(nz.array(), 2) - 1).sum();
+  float SXY = (nx.array()*ny.array()).sum();
+  float SXZ = (nx.array()*nz.array()).sum();
+  float SYZ = (ny.array()*nz.array()).sum();
+
+  S << SXX, SXY, SXZ,
+      SXY, SYY, SYZ,
+      SXZ, SYZ, SZZ;
+
+
+  float CX = (PA.col(0).array() * (Eigen::square(nx.array()) - 1) + PA.col(1).array() * (nx.array()*ny.array()) +  PA.col(2).array() * (nx.array()*nz.array())).sum();
+  float CY = (PA.col(0).array() * (nx.array()*ny.array()) + PA.col(1).array() * (Eigen::square(ny.array()) - 1) +  PA.col(2).array() * (ny.array()*nz.array())).sum();
+  float CZ = (PA.col(0).array() * (nx.array()*nz.array()) + PA.col(1).array() * (ny.array()*nz.array()) +  PA.col(2).array() * (Eigen::square(nz.array()) - 1)).sum();
+
+  C << CX,CY,CZ;
+
+  LOG(INFO) << "construct intersectionpoint";  
+  //P_intersect = (S.completeOrthogonalDecomposition().pseudoInverse()*C).transpose();	
+  P_intersect = S.ldlt().solve(C).transpose();
+  // //TODO: get intersections
+  return P_intersect;
 }
 
 

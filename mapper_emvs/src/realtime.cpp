@@ -394,15 +394,14 @@ class DepthEstimator
 
         this->depthmap_publisher_.publish(this->ros_depth_map_);
 
-        ROS_INFO("converting to Point Cloud ...");           
-        std::vector<std::vector<Eigen::Vector3f>> start_point_vec, end_point_vec;
-        start_point_vec.resize(dsi_shape_.dimX_  * dsi_shape_.dimY_);
-        end_point_vec.resize(dsi_shape_.dimX_  * dsi_shape_.dimY_);
-
-        //this->mapper_.getPointcloud(this->depth_map_, this->semidense_mask_, this->opts_pc_, this->pc_);
-        this->mapper_.getIntersectionPointCloudFromDSI(this->opts_depth_map_, this->opts_pc_, &start_point_vec.data()[0],  &end_point_vec.data()[0], this->pc_);
+        ROS_INFO("converting to Point Cloud ...");    
+        EMVS::PointCloud::Ptr pc_2 (new EMVS::PointCloud);     
+        EMVS::PointCloud::Ptr mappc_2 (new EMVS::PointCloud);       
+        this->mapper_.getPointcloud(this->depth_map_, this->semidense_mask_, this->opts_pc_, this->pc_);
+        this->mapper_.getIntersectionPointCloudFromDSI(this->opts_depth_map_, this->opts_pc_, pc_2);
 
         pcl::transformPointCloud(*this->pc_, *this->map_pc_, this->transformation_matrix);
+        pcl::transformPointCloud(*pc_2, *mappc_2, this->transformation_matrix);
         // this->iicp_.registerCloud(this->map_pc_);
         // pcl::PointCloud<pcl::PointXYZI>::Ptr tmp (new pcl::PointCloud<pcl::PointXYZI>);
         // pcl::transformPointCloud (*this->map_pc_, *tmp, this->iicp_.getAbsoluteTransform ());
@@ -413,6 +412,11 @@ class DepthEstimator
         this->map_pc_->header.frame_id = "map";
         pcl::toROSMsg(*this->map_pc_, *this->ros_pointcloud_);
         this->pointcloud_publisher_.publish(*this->ros_pointcloud_);
+
+        pc_2->header.frame_id = "camera";
+        mappc_2->header.frame_id = "map";
+        pcl::toROSMsg(*this->map_pc_, *this->ros_pointcloud_);
+        this->Voxel_pub.publish(*this->ros_pointcloud_);
 
         EMVS::PointCloud::Ptr cloud_filtered (new EMVS::PointCloud);
         this->mapper_.PCtoVoxelGrid(this->pc_, cloud_filtered, leaf_size_x, leaf_size_y, leaf_size_z);
@@ -453,7 +457,7 @@ class DepthEstimator
         holes_pos_intertial->header.frame_id = "map";
         holes_pos->header.frame_id = "camera";
         pcl::toROSMsg(*holes_pos_intertial, *this->ros_voxelcloud_);
-        this->Voxel_pub.publish(*this->ros_voxelcloud_);
+        // this->Voxel_pub.publish(*this->ros_voxelcloud_);
 
         this->hole_in_inertial_pub.publish(PCInertial);
         sleep(1);
