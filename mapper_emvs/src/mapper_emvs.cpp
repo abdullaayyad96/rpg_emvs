@@ -396,6 +396,7 @@ Eigen::Vector3f MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> st
   Eigen::MatrixXf PA(start_point_vectors.size(),3); //NOTE: initiate number of rows based on the number of vectors we have
   Eigen::MatrixXf PB(end_point_vectors.size(),3);
   Eigen::MatrixXf Si;
+  Eigen::MatrixXf Si2;
   Eigen::MatrixXf Si_pow;
   Eigen::MatrixXf ni;
   Eigen::Matrix3f S;
@@ -416,6 +417,7 @@ Eigen::Vector3f MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> st
   PB = end_points.transpose();
 
   Si = PB - PA;
+  Si2 = end_points - start_points;
 
   LOG(INFO) << "Start code";  
   Si_pow = Eigen::sqrt(Eigen::square(Si.array()).rowwise().sum());
@@ -447,8 +449,26 @@ Eigen::Vector3f MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> st
   LOG(INFO) << "construct intersectionpoint";  
   //P_intersect = (S.completeOrthogonalDecomposition().pseudoInverse()*C).transpose();	
   P_intersect = S.ldlt().solve(C).transpose();
-  // //TODO: get intersections
-  return P_intersect;
+  
+  //Find Distance between intersection point and lines
+  //float N = start_point_vectors.size();
+  float ui;
+  Eigen::VectorXf distances(start_point_vectors.size(),1);
+
+  for(int i=0; i < start_point_vectors.size(); i++)
+  {
+    ui = (P_intersect.transpose() - PA.row(i)) * (Si.row(i).transpose() / (Si.row(i)*Si.row(i).transpose()));
+    distances(i) = (P_intersect.transpose()-PA.row(i)-ui*Si.row(i)).norm();
+    if(distances(i) > 0.05 )
+    {
+      break; //TODO: Check with Abdulla
+    }
+    else
+    {
+      LOG(INFO) << "Distances are : " << distances;
+      return P_intersect;
+    }
+  }
 }
 
 
