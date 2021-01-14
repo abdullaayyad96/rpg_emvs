@@ -21,6 +21,8 @@
 #include <geometry_msgs/PoseStamped.h>
 #include "geometry_msgs/Pose.h"
 #include "geometry_msgs/Point.h"
+#include "geometry_msgs/Quaternion.h"
+#include <tf2/LinearMath/Quaternion.h>
 
 #include "Mission_Management/my_msg.h"
 #include <vector>
@@ -102,6 +104,7 @@ class DepthEstimator
       this->global_pc_.reset(new EMVS::PointCloud);
       this->ros_pointcloud_.reset(new sensor_msgs::PointCloud2);
       this->ros_voxelcloud_.reset(new sensor_msgs::PointCloud2);
+      this->ros_finalcloud_.reset(new sensor_msgs::PointCloud2);
       this->icp_.reset(new pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI>);
       this->icp_->setMaxCorrespondenceDistance (0.05);
       this->icp_->setMaximumIterations (50);
@@ -142,11 +145,12 @@ class DepthEstimator
       ros::Publisher depthmap_publisher_ = ros_node_.advertise<sensor_msgs::Image>("depth_image", 1);
       ros::Publisher pointcloud_publisher_ = ros_node_.advertise<sensor_msgs::PointCloud2>("point_cloud", 1);
       ros::Publisher cmd_pos_pub = ros_node_.advertise<geometry_msgs::Pose>("/ur_cmd_pose", 1);
-      ros::Publisher plane_quat_orientation_pub = ros_node_.advertise<geometry_msgs::Quaternion>("/plane_oreintation", 1);
-      ros::Publisher Voxel_pub = ros_node_.advertise<sensor_msgs::PointCloud2>("/voxel_pose", 1);
+      ros::Publisher FinalPC_pub = ros_node_.advertise<sensor_msgs::PointCloud2>("ICP_pointcloud", 1);
       ros::Publisher annotated_image_publisher = ros_node_.advertise<sensor_msgs::Image>("/annotated_image", 1);
     
       ros::Publisher hole_in_inertial_pub = ros_node_.advertise<Mission_Management::my_msg>("/hole_pos", 1);
+      ros::Publisher ICP_Transformation_pub = ros_node_.advertise<geometry_msgs::Quaternion>("/icp_transformation", 1);
+      ros::Publisher ICP_Quat_pub = ros_node_.advertise<geometry_msgs::Quaternion>("/icp_Quat", 1);
       
       ros::Subscriber event_subs_; 
       ros::Subscriber cam_info_subs_;
@@ -159,6 +163,7 @@ class DepthEstimator
 
       //ROS message
       Mission_Management::my_msg PCInertial;
+      Mission_Management::my_msg registered_PCInertial;
   
       LinearTrajectory trajectory_;
 
@@ -176,9 +181,10 @@ class DepthEstimator
       EMVS::PointCloud::Ptr global_pc_;
       sensor_msgs::PointCloud2::Ptr ros_pointcloud_;
       sensor_msgs::PointCloud2::Ptr ros_voxelcloud_;
-      pcl::IterativeClosestPoint<pcl::PointXYZI, pcl::PointXYZI>::Ptr icp_;
+      sensor_msgs::PointCloud2::Ptr ros_finalcloud_;
+      pcl::IterativeClosestPoint<EMVS::PointType, EMVS::PointType>::Ptr icp_;
       pcl::registration::IncrementalRegistration<pcl::PointXYZI> iicp_;
-
+     
       float X_corner;
       float Y_corner;
 
@@ -204,7 +210,7 @@ class DepthEstimator
           //event_subs_ = ros_node_.subscribe("/dvs_corner_events_soft", 10, &DepthEstimator::EventsCallback, this);
           cam_info_subs_ = ros_node_.subscribe("/dvs/camera_info", 1, &DepthEstimator::CamInfoCallback, this);
           pose_sub = ros_node_.subscribe("/ur10_pose", 1, &DepthEstimator::PoseCallback, this);
-          image_sub = ros_node_.subscribe("/dvs/image_raw", 1, &DepthEstimator::ImageCallback, this);
+          //image_sub = ros_node_.subscribe("/dvs/image_raw", 1, &DepthEstimator::ImageCallback, this);
           msg_output.success = true;
         }
         else 
@@ -225,10 +231,10 @@ class DepthEstimator
         ROS_INFO("Event Stream Received");
         for (uint i = 0 ; i < event_stream->events.size() ; i++)
         {
-          if(event_stream->events[i].x < 28 || event_stream->events[i].x > 33 || event_stream->events[i].y < 28 || event_stream->events[i].y > 33 )
+          if(event_stream->events[i].x < 165 || event_stream->events[i].x > 175 || event_stream->events[i].y < 80 || event_stream->events[i].y > 90 || event_stream->events[i].x < 90 || event_stream->events[i].x > 95 || event_stream->events[i].y < 96 ||event_stream->events[i].y > 103 )
           {
             if (this->apply_color_mask)
-            {
+            { 
               if (this->image_contour.size() > 0)
               {
                 if (cv::pointPolygonTest(this->image_contour, cv::Point2f(event_stream->events[i].x, event_stream->events[i].y), false))
@@ -296,8 +302,8 @@ class DepthEstimator
       {
         ROS_INFO("Camera Info Received");
         sensor_msgs::CameraInfo cam_info_ = *camera_info;
-        cam_info_.width = 346; //240;
-        cam_info_.height = 260; //180;
+        cam_info_.width = 240;//346; //240;
+        cam_info_.height = 180;//260; //180;
         this->cam_.fromCameraInfo(cam_info_);
         this->cam_initialized = true;
 
@@ -395,13 +401,15 @@ class DepthEstimator
         this->depthmap_publisher_.publish(this->ros_depth_map_);
 
         ROS_INFO("converting to Point Cloud ...");    
-        EMVS::PointCloud::Ptr pc_2 (new EMVS::PointCloud);     
-        EMVS::PointCloud::Ptr mappc_2 (new EMVS::PointCloud);       
+        EMVS::PointCloud::Ptr pc_2 (new EMVS::PointCloud);   // point cloud in camera frame from Triangulation  
+        EMVS::PointCloud::Ptr mappc_2 (new EMVS::PointCloud); // point cloud in Inertial frame from Triangulation        
         this->mapper_.getPointcloud(this->depth_map_, this->semidense_mask_, this->opts_pc_, this->pc_);
         this->mapper_.getIntersectionPointCloudFromDSI(this->opts_depth_map_, this->opts_pc_, pc_2);
 
         pcl::transformPointCloud(*this->pc_, *this->map_pc_, this->transformation_matrix);
         pcl::transformPointCloud(*pc_2, *mappc_2, this->transformation_matrix);
+        pcl::PCDWriter writer;
+        writer.write ("Holes_inertial.pcd", *mappc_2, false);
         // this->iicp_.registerCloud(this->map_pc_);
         // pcl::PointCloud<pcl::PointXYZI>::Ptr tmp (new pcl::PointCloud<pcl::PointXYZI>);
         // pcl::transformPointCloud (*this->map_pc_, *tmp, this->iicp_.getAbsoluteTransform ());
@@ -411,28 +419,28 @@ class DepthEstimator
         this->pc_->header.frame_id = "camera";
         this->map_pc_->header.frame_id = "map";
         pcl::toROSMsg(*this->map_pc_, *this->ros_pointcloud_);
-        this->pointcloud_publisher_.publish(*this->ros_pointcloud_);
+        //this->pointcloud_publisher_.publish(*this->ros_pointcloud_);
 
         pc_2->header.frame_id = "camera";
         mappc_2->header.frame_id = "map";
         pcl::toROSMsg(*this->map_pc_, *this->ros_pointcloud_);
-        this->Voxel_pub.publish(*this->ros_pointcloud_);
+        //this->FinalPC_pub.publish(*this->ros_pointcloud_);
 
-        EMVS::PointCloud::Ptr cloud_filtered (new EMVS::PointCloud);
+        EMVS::PointCloud::Ptr cloud_filtered (new EMVS::PointCloud); // point cloud "Camera Frame" after filtering using Voxels
         this->mapper_.PCtoVoxelGrid(this->pc_, cloud_filtered, leaf_size_x, leaf_size_y, leaf_size_z);
 
         geometry_utils::Transformation last_pose = poses_.at(t1_);
-        pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients);
-        this->geo_.FitPlanetoPC(cloud_filtered, coefficients);
+        pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients); // coefficients of plane equation
+        //this->geo_.FitPlanetoPC(cloud_filtered, coefficients);
         
         Eigen::Vector4f Quat;
-        this->geo_.PlaneRotationVector(coefficients, last_pose, Quat);
+        //this->geo_.PlaneRotationVector(coefficients, last_pose, Quat);
         
         Eigen::Vector4f PlaneQuatInertial; 
         geometry_msgs::Point point;
     
-        EMVS::PointCloud::Ptr holes_pos (new EMVS::PointCloud);
-        geo_.ProjectPointsOnPlane(coefficients, cloud_filtered, holes_pos);
+        EMVS::PointCloud::Ptr holes_pos (new EMVS::PointCloud); //Point Cloud "Camera Frame" after Projection of plane
+        //geo_.ProjectPointsOnPlane(coefficients, cloud_filtered, holes_pos);
         
         for(int i=0; i < holes_pos->size(); i++)
         {
@@ -452,22 +460,48 @@ class DepthEstimator
         LOG(INFO) << " Pose message :" <<  PlaneQuat.x << PlaneQuat.y << PlaneQuat.z << PlaneQuat.w;
 
         //Publish hole (voxel) position, pc position and plane orientation TODO: Correct the points to be in ROS compatibale type
-        EMVS::PointCloud::Ptr holes_pos_intertial (new EMVS::PointCloud);
-        pcl::transformPointCloud(*holes_pos, *holes_pos_intertial, this->transformation_matrix);
+        EMVS::PointCloud::Ptr holes_pos_intertial (new EMVS::PointCloud); //Point Cloud "Inertial Frame" 
+        //pcl::transformPointCloud(*holes_pos, *holes_pos_intertial, this->transformation_matrix);
+        pcl::transformPointCloud(*cloud_filtered, *holes_pos_intertial, this->transformation_matrix);
         holes_pos_intertial->header.frame_id = "map";
-        holes_pos->header.frame_id = "camera";
+        //holes_pos->header.frame_id = "camera";
+        //cloud_filtered->header.frame_id = "camera";
         pcl::toROSMsg(*holes_pos_intertial, *this->ros_voxelcloud_);
-        // this->Voxel_pub.publish(*this->ros_voxelcloud_);
+        // this->FinalPC_pub.publish(*this->ros_voxelcloud_);
+        // pcl::PCDWriter writer;
+        writer.write ("Voxel_holes_inertial_.pcd", *holes_pos_intertial, false);
+        this->pointcloud_publisher_.publish(*this->ros_voxelcloud_);
 
-        this->hole_in_inertial_pub.publish(PCInertial);
+        // Point Cloud Registration
+        EMVS::PointCloud::Ptr registeredPC (new EMVS::PointCloud); // Registered Point Cloud in plate 
+        geometry_msgs::Quaternion icp_Quat;
+        this->geo_.PointsRegistration(registeredPC, holes_pos_intertial, icp_Quat);
+        
+        registeredPC->header.frame_id = 'map';
+        pcl::toROSMsg(*registeredPC, *this->ros_finalcloud_);
+        writer.write ("Final_holes_inertial_.pcd", *registeredPC, false);
+        this->FinalPC_pub.publish(*this->ros_finalcloud_);
+        
+        for(int i=0; i < registeredPC->size(); i++)
+        {
+          this->geo_.FillPCintomsgtype(registeredPC, point, i);
+          this->registered_PCInertial.points.push_back(point);
+        }
+
+        LOG(INFO) << " after point registration";
+        LOG(INFO) << "registered_PCINERTAIL Points:" << registered_PCInertial;
+
+        this->hole_in_inertial_pub.publish(registered_PCInertial);
         sleep(1);
-        this->plane_quat_orientation_pub.publish(PlaneQuat);
-
+        this->ICP_Quat_pub.publish(icp_Quat);
+        
+        
         this->events_.clear();
         this->poses_.clear();   
         this->pose_list_.clear();
         this->pose_timestaps_.clear();
-        this->PCInertial.points.clear();        
+        this->PCInertial.points.clear();  
+        this->registered_PCInertial.points.clear();      
         event_subs_.shutdown();
         cam_info_subs_.shutdown();
         pose_sub.shutdown();
@@ -498,7 +532,7 @@ class DepthEstimator
         this->leaf_size_z = config.leaf_size_z;
         ROS_INFO("leaf size x %f:", this->leaf_size_x);
 
-        this->apply_color_mask = config.color_masking;
+        //this->apply_color_mask = config.color_masking;
       }
     
 };

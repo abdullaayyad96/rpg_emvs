@@ -465,7 +465,7 @@ Eigen::Vector3f MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> st
     }
     else
     {
-      LOG(INFO) << "Distances are : " << distances;
+      //LOG(INFO) << "Distances are : " << distances;
       return P_intersect;
     }
   }

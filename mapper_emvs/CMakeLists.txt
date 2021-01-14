@@ -66,6 +66,17 @@ cs_add_executable(realtime_emvs src/realtime.cpp)
 add_dependencies(realtime_emvs ${PROJECT_NAME}_gencfg)
 target_link_libraries(realtime_emvs ${PROJECT_NAME} ${PCL_LIBRARIES} ${VTK_LIBRARIES})
 
+cs_add_executable (pcd_write src/plate_pcd.cpp)
+target_link_libraries (pcd_write ${PROJECT_NAME} ${PCL_LIBRARIES})
+
+cs_add_executable (old_pcd_write src/old_plate_pcd.cpp)
+target_link_libraries (old_pcd_write ${PROJECT_NAME} ${PCL_LIBRARIES})
+
+cs_add_executable (pcl_testing src/realsensePCLwrapper.cpp)
+target_link_libraries (pcl_testing ${PROJECT_NAME} ${PCL_LIBRARIES} librealsense2.so ${OpenCV_LIBS})
+
+#cs_add_executable (icp_test src/test_icp.cpp)
+#target_link_libraries (pcd_write ${PROJECT_NAME} ${PCL_LIBRARIES})
 ################################################################################
 
 

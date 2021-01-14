@@ -2,6 +2,7 @@
 #include <mapper_emvs/mapper_emvs.hpp>
 #include <mapper_emvs/median_filtering.hpp>
 #include <pcl/filters/radius_outlier_removal.h>
+#include <pcl/registration/icp.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Point.h>
 
@@ -128,12 +129,6 @@ void PCGeometry::PlaneinInertial(PointCloud::Ptr holes_pos, geometry_utils::Tran
   //Get Camera pose
   kindr::minimal::RotationQuaternion CamPose = last_pose.getRotation();
 
-  //Transform from camera frame to inertial frame //TODO: check all rotations
-  // PlaneQuatInertial[0] = Quat[0] * CamPose.w() - Quat[1] * CamPose.x() - Quat[2] * CamPose.y() - Quat[3] * CamPose.z();  // 1
-  // PlaneQuatInertial[1] = Quat[0] * CamPose.x() + Quat[1] * CamPose.w() + Quat[2] * CamPose.z() - Quat[3] * CamPose.y();  // i
-  // PlaneQuatInertial[2] = Quat[0] * CamPose.y() - Quat[1] * CamPose.z() + Quat[2] * CamPose.w() + Quat[3] * CamPose.x();  // j
-  // PlaneQuatInertial[3] = Quat[0] * CamPose.z() + Quat[1] * CamPose.y() - Quat[2] * CamPose.x() + Quat[3] * CamPose.w();  // k
-
   Eigen::Vector4f CamPoseQuat;
   CamPoseQuat <<  CamPose.w(), CamPose.x(), CamPose.y(), CamPose.z();
   //Transform from camera frame to inertial frame 
@@ -163,18 +158,49 @@ void PCGeometry::PlaneinInertial(PointCloud::Ptr holes_pos, geometry_utils::Tran
   //NavigatetoPlane(pcinInertialFrame, PlaneQuatInertial);
 }
 
-// void PCGeometry::NavigatetoPlane(Eigen::Vector4d pc_, Eigen::Vector4f PlaneQuatInertial)
-// {
-//   geometry_msgs::Pose Pose;
-//   Pose.position.x = pc_[0];
-//   Pose.position.y = pc_[1];
-//   Pose.position.z = pc_[2] + 0.1;
-//   Pose.orientation.x = PlaneQuatInertial[1];
-//   Pose.orientation.y = PlaneQuatInertial[2];
-//   Pose.orientation.z = PlaneQuatInertial[3];
-//   Pose.orientation.w = PlaneQuatInertial[0];
-//   LOG(INFO) << " Pose message :" << Pose.orientation.x << Pose.orientation.y << Pose.orientation.z << Pose.orientation.w;
-//   this->cmd_pos_pub.publish(Pose);
-// }
+void PCGeometry::PointsRegistration(PointCloud::Ptr registeredPC, PointCloud::Ptr holes_pos_intertial, geometry_msgs::Quaternion& icp_Quat)
+{
+  pcl::PointCloud<pcl::PointXYZ>::Ptr sourceCloud(new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr targetCloud(new pcl::PointCloud<pcl::PointXYZ>);
+	pcl::PointCloud<pcl::PointXYZ>::Ptr finalCloud(new pcl::PointCloud<pcl::PointXYZ>);
+  Eigen::Matrix4f icp_Transformation;
+
+  //Assign both point clouds as source and target
+  pcl::io::loadPCDFile<pcl::PointXYZ>("plate_pcd.pcd", *sourceCloud);
+  pcl::copyPointCloud(*holes_pos_intertial, *targetCloud);
+  
+  // ICP object.
+	pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> registration;
+	registration.setInputSource(sourceCloud);
+	registration.setInputTarget(targetCloud);
+
+	registration.align(*finalCloud);
+	if (registration.hasConverged())
+	{
+		std::cout << "ICP converged." << std::endl
+				  << "The score is " << registration.getFitnessScore() << std::endl;
+		std::cout << "Transformation matrix:" << std::endl;
+		std::cout << registration.getFinalTransformation() << std::endl;
+    icp_Transformation = registration.getFinalTransformation();
+
+    icp_Quat.w = (std::sqrt(1 + icp_Transformation(0,0) + icp_Transformation(1,1) + icp_Transformation(2,2)))/2.0;
+    icp_Quat.x = (icp_Transformation(2,1) - icp_Transformation(1,2))/(4*icp_Quat.w);
+    icp_Quat.y = (icp_Transformation(0,2) - icp_Transformation(2,0))/(4*icp_Quat.w);
+    icp_Quat.z = (icp_Transformation(1,0) - icp_Transformation(0,1))/(4*icp_Quat.w);
+    std::cout << icp_Quat << std::endl;
+    std::cout << *finalCloud << std::endl;
+    pcl::copyPointCloud(*finalCloud, *registeredPC);
+    std::cout << "Registered Point Cloud: "<< *registeredPC << std::endl;
+	}
+	else std::cout << "ICP did not converge." << std::endl;
+
+}
+
+void PCGeometry::FillPCintomsgtype(PointCloud::Ptr registeredPC, geometry_msgs::Point& point, int i)
+{
+  point.x = registeredPC->points[i].x;
+  point.y = registeredPC->points[i].y;
+  point.z = registeredPC->points[i].z;
+}
 
 }
