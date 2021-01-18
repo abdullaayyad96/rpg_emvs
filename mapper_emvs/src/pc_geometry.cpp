@@ -6,7 +6,6 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Point.h>
 
-#include "Mission_Management/my_msg.h"
 #include <vector>
 
 namespace EMVS {
@@ -158,7 +157,7 @@ void PCGeometry::PlaneinInertial(PointCloud::Ptr holes_pos, geometry_utils::Tran
   //NavigatetoPlane(pcinInertialFrame, PlaneQuatInertial);
 }
 
-void PCGeometry::PointsRegistration(PointCloud::Ptr registeredPC, PointCloud::Ptr holes_pos_intertial, geometry_msgs::Quaternion& icp_Quat)
+void PCGeometry::PointsRegistration(PointCloud::Ptr registeredPC, PointCloud::Ptr original_cloud, geometry_msgs::Quaternion& icp_Quat)
 {
   pcl::PointCloud<pcl::PointXYZ>::Ptr sourceCloud(new pcl::PointCloud<pcl::PointXYZ>);
   pcl::PointCloud<pcl::PointXYZ>::Ptr targetCloud(new pcl::PointCloud<pcl::PointXYZ>);
@@ -167,7 +166,7 @@ void PCGeometry::PointsRegistration(PointCloud::Ptr registeredPC, PointCloud::Pt
 
   //Assign both point clouds as source and target
   pcl::io::loadPCDFile<pcl::PointXYZ>("plate_pcd.pcd", *sourceCloud);
-  pcl::copyPointCloud(*holes_pos_intertial, *targetCloud);
+  pcl::copyPointCloud(*original_cloud, *targetCloud);
   
   // ICP object.
 	pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> registration;

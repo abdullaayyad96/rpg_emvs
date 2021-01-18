@@ -27,7 +27,6 @@
 
 #include "geometry_msgs/Point.h"
 
-#include "Mission_Management/my_msg.h"
 #include <vector>
 
 
