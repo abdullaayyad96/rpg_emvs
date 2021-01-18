@@ -22,7 +22,7 @@
 #include "geometry_msgs/Pose.h"
 #include "geometry_msgs/Point.h"
 
-#include "Mission_Management/my_msg.h"
+#include "Mission_Management/feature_location.h"
 #include <vector>
 
 #include "std_msgs/MultiArrayLayout.h"
@@ -128,6 +128,8 @@ class DepthEstimator
       float leaf_size_y;
       float leaf_size_z;
 
+      float min_h, max_h, min_s, max_s, min_v, max_v; //color thresholding
+
       bool apply_color_mask = false;
 
       std::vector<cv::Point> image_contour;
@@ -222,7 +224,7 @@ class DepthEstimator
 
       void EventsCallback(const dvs_msgs::EventArray::ConstPtr &event_stream)
       {
-        ROS_INFO("Event Stream Received");
+        //ROS_INFO("Event Stream Received");
         for (uint i = 0 ; i < event_stream->events.size() ; i++)
         {
           if(event_stream->events[i].x < 28 || event_stream->events[i].x > 33 || event_stream->events[i].y < 28 || event_stream->events[i].y > 33 )
@@ -247,7 +249,7 @@ class DepthEstimator
 
       void ImageCallback(const sensor_msgs::ImageConstPtr& input_image)
       {
-        ROS_INFO("Image Received");
+        //ROS_INFO("Image Received");
         cv_bridge::CvImagePtr input_image_bridge = cv_bridge::toCvCopy(input_image, input_image->encoding);
 
         cv::Mat cv_image = input_image_bridge->image;
@@ -259,7 +261,7 @@ class DepthEstimator
 
         //Threshold RGB image
         cv::Mat threshold_image;
-        cv::inRange(hsv_image, cv::Scalar(55, 100, 30), cv::Scalar(80, 255, 200), threshold_image);
+        cv::inRange(hsv_image, cv::Scalar(this->min_h, this->min_s, this->min_v), cv::Scalar(this->max_h, this->max_s, this->max_v), threshold_image);
 
         //Contour detection
         std::vector<std::vector<cv::Point>> contours;
@@ -294,7 +296,7 @@ class DepthEstimator
 
       void CamInfoCallback(const sensor_msgs::CameraInfo::ConstPtr &camera_info)
       {
-        ROS_INFO("Camera Info Received");
+        //ROS_INFO("Camera Info Received");
         sensor_msgs::CameraInfo cam_info_ = *camera_info;
         cam_info_.width = 346; //240;
         cam_info_.height = 260; //180;
@@ -310,7 +312,7 @@ class DepthEstimator
 
       void PoseCallback(const geometry_msgs::PoseStamped::ConstPtr &camera_pose)
       {
-        ROS_INFO("Pose Received");
+        //ROS_INFO("Pose Received");
         if (!pose_initialized_)
         {
           this->processed_pose_ = *camera_pose;
@@ -499,6 +501,12 @@ class DepthEstimator
         ROS_INFO("leaf size x %f:", this->leaf_size_x);
 
         this->apply_color_mask = config.color_masking;
+        this->min_h = config.min_h;
+        this->max_h = config.max_h;
+        this->min_s = config.min_s;
+        this->max_s = config.max_s;
+        this->min_v = config.min_v;
+        this->max_v = config.max_v;
       }
     
 };
