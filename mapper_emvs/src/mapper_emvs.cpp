@@ -24,9 +24,6 @@ MapperEMVS::MapperEMVS(const image_geometry::PinholeCameraModel& cam,
   //         0.f        , (float) 206.3225  , (float) 83.69464,
   //         0.f        , 0.f          ,  1.f;
 
-  std::cout << K_ << std::endl;
-
-
   setupDSI();
 
   precomputeRectifiedPoints();
@@ -465,7 +462,7 @@ Eigen::Vector3f MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> st
     }
     else
     {
-      LOG(INFO) << "Distances are : " << distances;
+      //LOG(INFO) << "Distances are : " << distances;
       return P_intersect;
     }
   }

@@ -44,6 +44,8 @@ public:
   void ProjectPointsOnPlane(pcl::ModelCoefficients::Ptr coefficients, PointCloud::Ptr cloud_filtered, PointCloud::Ptr& holes_pos);
   void PlaneinInertial(PointCloud::Ptr cloud_filtered, geometry_utils::Transformation last_pose, Eigen::Vector4f Quat, Eigen::Vector4f& PlaneQuatInertial, geometry_msgs::Point& point, int i);
   //void NavigatetoPlane(Eigen::Vector4d pc_, Eigen::Vector4f PlaneQuatInertial);
+  void PointsRegistration(PointCloud::Ptr output_pointcloud, PointCloud::Ptr original_pointcloud, geometry_msgs::Quaternion& icp_Quat);
+  void FillPCintomsgtype(PointCloud::Ptr registeredPC, geometry_msgs::Point& point, int i);
 
 private:
 
