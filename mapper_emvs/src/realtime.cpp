@@ -68,6 +68,7 @@ DEFINE_double(max_depth, 5.0, "Max depth, in meters (default: 5.0)");
 DEFINE_int32(adaptive_threshold_kernel_size, 5, "Size of the Gaussian kernel used for adaptive thresholding. (default: 5)");
 DEFINE_double(adaptive_threshold_c, 5., "A value in [0, 255]. The smaller the noisier and more dense reconstruction (default: 5.)");
 DEFINE_int32(median_filter_size, 5, "Size of the median filter used to clean the depth map. (default: 5)");
+DEFINE_int32(local_max_filter_size, 19, "Size of the local maxima filter used to clean the depth map");
 
 // Point cloud parameters (noise removal). Section 5.2.4 in the IJCV paper.
 DEFINE_double(radius_search, 0.05, "Size of the radius filter. (default: 0.05)");
@@ -83,7 +84,7 @@ class DepthEstimator
   public:
     DepthEstimator(const std::string& camero_info_topic, const std::string& event_topic, const std::string& pose_topic, float distance_thresh,
                    float dim_X, float dim_Y, float dim_Z, float min_depth, float max_depth, float fov_deg,
-                   float adaptive_threshold_kernel_size, float adaptive_threshold_c, float median_filter_size,
+                   float adaptive_threshold_kernel_size, float adaptive_threshold_c, float median_filter_size, float local_max_filter_size,
                    float radius_search, float min_num_neighbors)
     {
       
@@ -96,6 +97,7 @@ class DepthEstimator
       opts_depth_map_.adaptive_threshold_kernel_size_ = adaptive_threshold_kernel_size;
       opts_depth_map_.adaptive_threshold_c_ = adaptive_threshold_c;
       opts_depth_map_.median_filter_size_ = median_filter_size;
+      opts_depth_map_.local_max_filter_size_ = local_max_filter_size;
 
       opts_pc_.radius_search_ = radius_search;
       opts_pc_.min_num_neighbors_ = min_num_neighbors;   
@@ -114,6 +116,7 @@ class DepthEstimator
 
       f_ = boost::bind(&DepthEstimator::parameter_callback, this, _1, _2);
       server_.setCallback(f_);
+      image_sub = ros_node_.subscribe("/dvs/image_raw", 1, &DepthEstimator::ImageCallback, this);
     }
    
   private:
@@ -239,7 +242,7 @@ class DepthEstimator
             { 
               if (this->image_contour.size() > 0)
               {
-                if (cv::pointPolygonTest(this->image_contour, cv::Point2f(event_stream->events[i].x, event_stream->events[i].y), false))
+                if (cv::pointPolygonTest(this->image_contour, cv::Point2f(event_stream->events[i].x, event_stream->events[i].y), false) > 0)
                 {
                   this->events_.push_back(event_stream->events[i]);
                 }
@@ -292,12 +295,11 @@ class DepthEstimator
           this->image_contour = contours[largest_ctr_idx];
     
           cv::drawContours(cv_image, contours, largest_ctr_idx, cv::Scalar(255,0,0));
-
-          input_image_bridge->image = cv_image;
-          sensor_msgs::Image output_image;
-          input_image_bridge->toImageMsg(output_image);
-          this->annotated_image_publisher.publish(output_image);
         }
+        input_image_bridge->image = cv_image;
+        sensor_msgs::Image output_image;
+        input_image_bridge->toImageMsg(output_image);
+        this->annotated_image_publisher.publish(output_image);
       }
 
       void CamInfoCallback(const sensor_msgs::CameraInfo::ConstPtr &camera_info)
@@ -374,6 +376,19 @@ class DepthEstimator
         ros::Time t1_;
         this->trajectory_.getLastControlPose(&T1_, &t1_);
 
+        // //set custom pose for DSI TODO:check
+        // const Eigen::Vector3d position(0.338971094978,
+        //                               0.0960865226921,
+        //                               0.0960865226921);
+        // const Eigen::Quaterniond quat(0.340924403308,
+        //                               -0.579348482351,
+        //                               0.621777970355,
+        //                               -0.401893073849);    
+
+        // T1_ = geometry_utils::Transformation(position, quat);
+        // this->transformation_matrix.block(0,0,3,3) = quat.normalized().toRotationMatrix();
+        // this->transformation_matrix.block(0,3,3,1) = position;
+
         ROS_INFO("Evaluating DSI ...");
         //evaluate DSI
         this->mapper_.evaluateDSI(this->events_, this->trajectory_ , T1_.inverse());
@@ -408,7 +423,8 @@ class DepthEstimator
         pcl::transformPointCloud(*this->pc_, *this->map_pc_, this->transformation_matrix);
         pcl::transformPointCloud(*pc_2, *mappc_2, this->transformation_matrix);
         pcl::PCDWriter writer;
-        writer.write ("before_voxel.pcd", *mappc_2, false);
+        writer.write ("before_voxel_emvs.pcd", *this->map_pc_, false);
+        writer.write ("before_voxel_intersection.pcd", *mappc_2, false);
 
         //TODO: Revise iterative build of map
         // this->iicp_.registerCloud(this->map_pc_);
@@ -427,14 +443,21 @@ class DepthEstimator
         pcl::toROSMsg(*this->map_pc_, *this->ros_pointcloud_);
         //this->FinalPC_pub.publish(*this->ros_pointcloud_);
 
+        EMVS::PointCloud::Ptr cloud_filtered_emvs (new EMVS::PointCloud); // point cloud "Camera Frame" after filtering using Voxels
+        this->mapper_.PCtoVoxelGrid(this->map_pc_, cloud_filtered_emvs, leaf_size_x, leaf_size_y, leaf_size_z);        
+        writer.write ("after_voxel_emvs.pcd", *cloud_filtered_emvs, false);
+
+
         EMVS::PointCloud::Ptr cloud_filtered (new EMVS::PointCloud); // point cloud "Camera Frame" after filtering using Voxels
         this->mapper_.PCtoVoxelGrid(mappc_2, cloud_filtered, leaf_size_x, leaf_size_y, leaf_size_z);        
-        writer.write ("after_voxel.pcd", *cloud_filtered, false);
-
+        writer.write ("after_voxel_intersection.pcd", *cloud_filtered, false);
 
         EMVS::PointCloud::Ptr cloud_fitted (new EMVS::PointCloud); 
         geometry_msgs::Quaternion result_rotation; //Result transformation
 
+        EMVS::PointCloud::Ptr registered_cloud (new EMVS::PointCloud); // point cloud "Camera Frame" after filtering using Voxels
+        EMVS::PointCloud::Ptr map_registered_cloud (new EMVS::PointCloud); // point cloud "Camera Frame" after filtering using Voxels
+        Eigen::Vector4f Quat;
         if (apply_ICP)
         {
           //Get object location from pointcloud registration
@@ -443,35 +466,38 @@ class DepthEstimator
         else
         {
           //Get object location from plane fitting
-          geometry_utils::Transformation last_pose = poses_.at(t1_);
           pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients); // coefficients of plane equation
-          this->geo_.FitPlanetoPC(cloud_filtered, coefficients);
+          this->geo_.FitPlanetoPC(pc_2, coefficients);
           
-          Eigen::Vector4f Quat;
-          this->geo_.PlaneRotationVector(coefficients, last_pose, Quat); //TODO: No need for last pose
+          this->geo_.PlaneRotationVector(coefficients, T1_, Quat); //TODO: No need for last pose
           
-          geo_.ProjectPointsOnPlane(coefficients, cloud_filtered, cloud_fitted);
-          this->mapper_.PCtoVoxelGrid(cloud_fitted, cloud_fitted, leaf_size_x, leaf_size_y, leaf_size_z);     
-
-          result_rotation.x = Quat[1];
-          result_rotation.y = Quat[2];
-          result_rotation.z = Quat[3];
-          result_rotation.w = Quat[0];
+          geo_.ProjectPointsOnPlane(coefficients, pc_2, registered_cloud);
+          this->mapper_.PCtoVoxelGrid(registered_cloud, registered_cloud, leaf_size_x, leaf_size_y, leaf_size_z);     
         }
-
 
         geometry_msgs::Point point;      
-        for(int i=0; i < cloud_fitted->size(); i++)
+        Eigen::Vector4f PlaneQuatInertial;
+        for(int i=0; i < registered_cloud->size(); i++)
         {
-          this->geo_.FillPCintomsgtype(cloud_fitted, point, i); //TODO: Use pointcloud publisher
+          geo_.PlaneinInertial(registered_cloud, T1_, Quat, PlaneQuatInertial, point, i);
           this->registered_PCInertial.points.push_back(point);
         }
-        cloud_fitted->header.frame_id = "base";
-        pcl::toROSMsg(*cloud_fitted, *this->ros_finalcloud_);
+        pcl::transformPointCloud(*registered_cloud, *map_registered_cloud, this->transformation_matrix);
+        map_registered_cloud->header.frame_id = "base";
+        pcl::toROSMsg(*map_registered_cloud, *this->ros_finalcloud_);
         this->ros_finalcloud_->header.frame_id = "base";
-        writer.write ("after_registration.pcd", *cloud_fitted, false);
+        writer.write ("after_registration.pcd", *map_registered_cloud, false);
         this->pointcloud_publisher_.publish(*this->ros_finalcloud_);
         
+
+        result_rotation.x = PlaneQuatInertial[1];
+        result_rotation.y = PlaneQuatInertial[2];
+        result_rotation.z = PlaneQuatInertial[3];
+        result_rotation.w = PlaneQuatInertial[0];
+
+
+        LOG(INFO) << "Quat X Y Z W :" << PlaneQuatInertial[1] << ", " << PlaneQuatInertial[2] << ", " << PlaneQuatInertial[3] << ", " << PlaneQuatInertial[0];
+
         this->hole_in_inertial_pub.publish(registered_PCInertial);
         this->rotation_pub.publish(result_rotation);       
         
@@ -500,6 +526,7 @@ class DepthEstimator
         this->opts_depth_map_.adaptive_threshold_kernel_size_ = config.adaptive_threshold_kernel_size;
         this->opts_depth_map_.adaptive_threshold_c_ = config.adaptive_threshold_c;
         this->opts_depth_map_.median_filter_size_ = config.median_filter_size;
+        this->opts_depth_map_.local_max_filter_size_ = config.local_max_filter_size;
 
         this->update_distance_ = config.update_distance;
         ROS_INFO("update distance %f:", this->update_distance_);
@@ -544,7 +571,7 @@ int main(int argc, char** argv)
 
   DepthEstimator depth_estimator(FLAGS_camera_info_topic, FLAGS_event_topic, FLAGS_pose_topic, 0.2,
                                 FLAGS_dimX, FLAGS_dimY, FLAGS_dimZ, FLAGS_min_depth, FLAGS_max_depth, FLAGS_fov_deg,
-                                FLAGS_adaptive_threshold_kernel_size, FLAGS_adaptive_threshold_c, FLAGS_median_filter_size,
+                                FLAGS_adaptive_threshold_kernel_size, FLAGS_adaptive_threshold_c, FLAGS_median_filter_size, FLAGS_local_max_filter_size,
                                 FLAGS_radius_search, FLAGS_min_num_neighbors);
 
   

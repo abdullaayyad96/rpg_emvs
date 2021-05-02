@@ -3,6 +3,7 @@
 #include <mapper_emvs/median_filtering.hpp>
 #include <pcl/filters/radius_outlier_removal.h>
 #include <geometry_msgs/PoseStamped.h>
+#include <opencv2/imgcodecs.hpp>
 
 namespace EMVS {
 
@@ -125,7 +126,7 @@ void MapperEMVS::fillVoxelGrid(const std::vector<Eigen::Vector4f>& event_locatio
 
   // For efficiency reasons, we split each packet into batches of N events each
   // which allows to better exploit the L1 cache
-  static const int N = 128;
+  static const int N = 1;
   typedef Eigen::Array<float, N, 1> Arrayf;
 
   const float z0 = raw_depths_vec_[0];
@@ -275,6 +276,22 @@ void MapperEMVS::getDepthMapFromDSI(cv::Mat& depth_map, cv::Mat &confidence_map,
                         options_depth_map.adaptive_threshold_kernel_size_,
                         -options_depth_map.adaptive_threshold_c_);
 
+  // //For sparse cases, use local maximum value
+  // cv::Mat max_value_mask, dilated_heatmap, upper_thresh_map, lower_threshold_map, threshold_map;
+  // cv::Mat dilate_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(options_depth_map.local_max_filter_Size_, options_depth_map.local_max_filter_Size_));
+  // cv::dilate(confidence_8bit,  dilated_heatmap, dilate_kernel);
+
+  // cv::threshold(dilated_heatmap, upper_thresh_map, 3, 10, CV_THRESH_TOZERO);
+  // cv::threshold(dilated_heatmap, lower_threshold_map, 3, 1, CV_THRESH_BINARY_INV);
+  // threshold_map = upper_thresh_map + lower_threshold_map;
+  
+  // max_value_mask = (threshold_map == confidence_8bit);
+  // double my_max, my_min, a_min, a_max;
+  // cv::minMaxIdx(max_value_mask, &my_min, &my_max);
+  // cv::minMaxIdx(mask, &a_min, &a_max);
+  // cv::bitwise_and(mask, max_value_mask/255, mask);
+  // cv::minMaxIdx(mask, &a_min, &a_max);
+
 
   // Clean up depth map using median filter (Section 5.2.5 in the IJCV paper)
   cv::Mat depth_cell_indices_filtered;
@@ -314,8 +331,24 @@ void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options
                         cv::THRESH_BINARY,
                         options_depth_map.adaptive_threshold_kernel_size_,
                         -options_depth_map.adaptive_threshold_c_);
+
   
-  LOG(INFO) << "Get passing vectors";
+  //For sparse cases, use local maximum value
+  cv::Mat max_value_mask, dilated_heatmap, upper_thresh_map, lower_threshold_map, threshold_map;
+  cv::Mat dilate_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(options_depth_map.local_max_filter_size_, options_depth_map.local_max_filter_size_));
+  cv::dilate(confidence_8bit,  dilated_heatmap, dilate_kernel);
+
+  cv::threshold(dilated_heatmap, upper_thresh_map, 3, 10, CV_THRESH_TOZERO);
+  cv::threshold(dilated_heatmap, lower_threshold_map, 3, 1, CV_THRESH_BINARY_INV);
+  threshold_map = upper_thresh_map + lower_threshold_map;
+  
+  max_value_mask = (threshold_map == confidence_8bit);
+  double my_max, my_min, a_min, a_max;
+  cv::minMaxIdx(max_value_mask, &my_min, &my_max);
+  cv::minMaxIdx(mask, &a_min, &a_max);
+  cv::bitwise_and(mask, max_value_mask/255, mask);
+  cv::minMaxIdx(mask, &a_min, &a_max);
+
   //Extract passing vectors
   for(int y=0; y<depth_cell_indices.rows; ++y)
   {
@@ -343,8 +376,6 @@ void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options
   // }
 
   
-
-  LOG(INFO) << "Clean depth map vectors";
   // Clean up depth map using median filter (Section 5.2.5 in the IJCV paper)
   cv::Mat depth_cell_indices_filtered;
   huangMedianFilter(depth_cell_indices,
@@ -356,7 +387,6 @@ void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options
   const int border_size = std::max(options_depth_map.adaptive_threshold_kernel_size_ / 2, 1);
   removeMaskBoundary(mask, border_size);
 
-  LOG(INFO) << "Get intercetions points";
   // Convert depth indices to depth values
   // BearingVector b_rv = virtual_cam_.projectPixelTo3dRay(Keypoint(maxLoc.x, maxLoc.y));
   // b_rv.normalize();
@@ -369,17 +399,14 @@ void MapperEMVS::getIntersectionPointCloudFromDSI(const OptionsDepthMap &options
     {
       if(mask.at<uint8_t>(y,x) > 0)
       {
-        LOG(INFO) << "Get specific intersection point";
         Eigen::Vector3f xyz_rv = this->getIntersectionPoint(start_point_vec[y*depth_cell_indices.cols + x], end_point_vec[y*depth_cell_indices.cols + x]);
-        LOG(INFO) << "Got specific intersection point";
-
+        
         pcl::PointXYZI p_rv; // 3D point in reference view
         p_rv.x = xyz_rv.x();
         p_rv.y = xyz_rv.y();
         p_rv.z = xyz_rv.z();
         p_rv.intensity = 1.0 / p_rv.z;
         pc_->push_back(p_rv);
-        LOG(INFO) << "Contruct i'th point in pointcloud";
       }
     } 
   }
@@ -403,7 +430,6 @@ Eigen::Vector3f MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> st
   Eigen::Vector3f C;
   Eigen::Vector3f P_intersect;
 
-  LOG(INFO) << "Convert to matrix";  
   for(int i=0; i<start_point_vectors.size(); i++)
   {
     start_points.col(i) = start_point_vectors[i];
@@ -416,7 +442,6 @@ Eigen::Vector3f MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> st
   Si = PB - PA;
   Si2 = end_points - start_points;
 
-  LOG(INFO) << "Start code";  
   Si_pow = Eigen::sqrt(Eigen::square(Si.array()).rowwise().sum());
 
   ni = Si.array()/(Si_pow*Eigen::MatrixXf::Ones(1,3)).array();
@@ -443,7 +468,6 @@ Eigen::Vector3f MapperEMVS::getIntersectionPoint(std::vector<Eigen::Vector3f> st
 
   C << CX,CY,CZ;
 
-  LOG(INFO) << "construct intersectionpoint";  
   //P_intersect = (S.completeOrthogonalDecomposition().pseudoInverse()*C).transpose();	
   P_intersect = S.ldlt().solve(C).transpose();
   

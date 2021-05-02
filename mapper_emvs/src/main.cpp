@@ -17,6 +17,7 @@
 #include <pcl/segmentation/sac_segmentation.h>
 #include <pcl/visualization/cloud_viewer.h>
 #include <pcl/filters/extract_indices.h>
+#include <pcl_ros/transforms.h>
 
 #include <vtkAutoInit.h>
 
@@ -50,6 +51,7 @@ DEFINE_double(max_depth, 5.0, "Max depth, in meters (default: 5.0)");
 DEFINE_int32(adaptive_threshold_kernel_size, 5, "Size of the Gaussian kernel used for adaptive thresholding. (default: 5)");
 DEFINE_double(adaptive_threshold_c, 5., "A value in [0, 255]. The smaller the noisier and more dense reconstruction (default: 5.)");
 DEFINE_int32(median_filter_size, 5, "Size of the median filter used to clean the depth map. (default: 5)");
+DEFINE_int32(local_max_filter_size, 19, "Size of the local maxima filter used to clean the depth map");
 
 // Point cloud parameters (noise removal). Section 5.2.4 in the IJCV paper.
 DEFINE_double(radius_search, 0.05, "Size of the radius filter. (default: 0.05)");
@@ -97,9 +99,10 @@ int main(int argc, char** argv)
   trajectory.getFirstControlPose(&T0_, &t0_);
   trajectory.getLastControlPose(&T1_, &t1_);
   geometry_utils::Transformation T_w_rv;
-  trajectory.getPoseAt(ros::Time(0.5 * (t0_.toSec() + t1_.toSec())), T_w_rv);
-  geometry_utils::Transformation T_rv_w = T_w_rv.inverse();
-  //geometry_utils::Transformation T_rv_w = T1_.inverse();
+  // trajectory.getPoseAt(ros::Time((1*t0_.toSec() + 3*t1_.toSec())/4), T_w_rv);
+  // trajectory.getPoseAt(t1_, T_w_rv);
+  // geometry_utils::Transformation T_rv_w = T_w_rv.inverse();
+  geometry_utils::Transformation T_rv_w = T1_.inverse();
   
   // Initialize the DSI
   CHECK_LE(FLAGS_dimZ, 256) << "Number of depth planes should be <= 256";
@@ -117,6 +120,7 @@ int main(int argc, char** argv)
   auto duration_dsi = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_dsi - t_start_dsi ).count();
   LOG(INFO) << "Time to evaluate DSI: " << duration_dsi << " milliseconds";
   LOG(INFO) << "Number of events processed: " << events.size() << " events";
+  LOG(INFO) << "Number of poses processed: " << poses.size() << " pose";
   LOG(INFO) << "Number of events processed per second: " << static_cast<float>(events.size()) / (1000.f * static_cast<float>(duration_dsi)) << " Mev/s";
 
   LOG(INFO) << "Mean square = " << mapper.dsi_.computeMeanSquare();
@@ -130,6 +134,7 @@ int main(int argc, char** argv)
   opts_depth_map.adaptive_threshold_kernel_size_ = FLAGS_adaptive_threshold_kernel_size;
   opts_depth_map.adaptive_threshold_c_ = FLAGS_adaptive_threshold_c;
   opts_depth_map.median_filter_size_ = FLAGS_median_filter_size;
+  opts_depth_map.local_max_filter_size_ = FLAGS_local_max_filter_size;
   cv::Mat depth_map, confidence_map, semidense_mask;
   mapper.getDepthMapFromDSI(depth_map, confidence_map, semidense_mask, opts_depth_map);
   
@@ -162,22 +167,31 @@ int main(int argc, char** argv)
   opts_pc.min_num_neighbors_ = FLAGS_min_num_neighbors;
   
   EMVS::PointCloud::Ptr pc (new EMVS::PointCloud);
+  EMVS::PointCloud::Ptr macp_pc (new EMVS::PointCloud);
+  EMVS::PointCloud::Ptr intersection_pc (new EMVS::PointCloud);
+  EMVS::PointCloud::Ptr intersection_map_pc (new EMVS::PointCloud);
   mapper.getPointcloud(depth_map, semidense_mask, opts_pc, pc);
+  mapper.getIntersectionPointCloudFromDSI(opts_depth_map, opts_pc, intersection_pc);
+
+  pcl::transformPointCloud(*pc, *macp_pc, T1_.getTransformationMatrix());
+  pcl::transformPointCloud(*intersection_pc, *intersection_map_pc, T1_.getTransformationMatrix());
   
   // Save point cloud to disk
-  pcl::io::savePCDFileASCII ("pointcloud.pcd", *pc);
+  pcl::PCDWriter writer;
+  writer.write ("before_voxel_emvs.pcd", *macp_pc, false);
+  writer.write ("before_voxel_intersection.pcd", *intersection_map_pc, false);
   LOG(INFO) << "Saved " << pc->points.size () << " data points to pointcloud.pcd";
-  // for (int i=0; i< pc->points.size(); i++)
-  // {
-  //   ROS_INFO("point %d, x: %f, y: %f, z: %f", i, pc->points[i].x, pc->points[i].y, pc->points[i].z);
-  // }
 
   // Convert Point Clouds to Voxel Grid
   EMVS::PointCloud::Ptr cloud_filtered (new EMVS::PointCloud);
-  float leaf_size_x = 0.1;
-  float leaf_size_y = 0.1;
-  float leaf_size_z = 0.1;
-  mapper.PCtoVoxelGrid(pc, cloud_filtered, leaf_size_x, leaf_size_y, leaf_size_z);
+  EMVS::PointCloud::Ptr cloud_filtered_is (new EMVS::PointCloud); 
+  float leaf_size_x = 0.05;
+  float leaf_size_y = 0.05;
+  float leaf_size_z = 0.05;
+  mapper.PCtoVoxelGrid(macp_pc, cloud_filtered, leaf_size_x, leaf_size_y, leaf_size_z);
+  writer.write ("after_voxel_emvs.pcd", *cloud_filtered, false);
+  mapper.PCtoVoxelGrid(intersection_map_pc, cloud_filtered_is, leaf_size_x, leaf_size_y, leaf_size_z);
+  writer.write ("after_voxel_intersection.pcd", *cloud_filtered_is, false);
 
   //Intialize PCGeometry
   EMVS::PCGeometry geo;
